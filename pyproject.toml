@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "project-jar"
+version = "0.1.0"
+description = "Project and task management system with flexible filtering and multiple output formats"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.1",
+    "rich>=13.0",
+    "platformdirs>=4.0",
+    "mcp>=1.0",
+]
+
+[project.scripts]
+jar = "jar.cli.main:cli"
+jar-mcp = "jar.mcp_server:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["jar*"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]

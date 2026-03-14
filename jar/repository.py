@@ -1,0 +1,238 @@
+"""Data-access layer — raw CRUD over SQLite, no business logic."""
+
+from __future__ import annotations
+
+import sqlite3
+from datetime import datetime, timezone
+from typing import Optional
+
+from .filters import ProjectFilter, SortSpec, TaskFilter, build_project_query, build_task_query
+from .logging_config import get_db_logger
+from .models import Project, Status, Task
+
+
+def _now_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _log(op: str, table: str, detail: str = "") -> None:
+    get_db_logger().debug("%s | table=%s | %s", op, table, detail)
+
+
+# ══════════════════════════════════════════════════════════════════ Task repo
+
+
+class TaskRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    # ------------------------------------------------------------------ read
+
+    def get_by_id(self, task_id: int) -> Optional[Task]:
+        _log("SELECT", "tasks", f"id={task_id}")
+        row = self._conn.execute(
+            "SELECT * FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        return _row_to_task(row) if row else None
+
+    def list_all(self) -> list[Task]:
+        _log("SELECT", "tasks", "all")
+        rows = self._conn.execute("SELECT * FROM tasks").fetchall()
+        return [_row_to_task(r) for r in rows]
+
+    def list_filtered(
+        self,
+        f: Optional[TaskFilter] = None,
+        sort: Optional[SortSpec] = None,
+    ) -> list[Task]:
+        sql, params = build_task_query(f, sort)
+        _log("SELECT", "tasks", f"filter={f!r} sort={sort!r}")
+        rows = self._conn.execute(sql, params).fetchall()
+        return [_row_to_task(r) for r in rows]
+
+    # ------------------------------------------------------------------ write
+
+    def insert(self, task: Task) -> Task:
+        now = _now_utc()
+        _log("INSERT", "tasks", f"name={task.name!r}")
+        with self._conn:
+            cur = self._conn.execute(
+                """
+                INSERT INTO tasks (name, description, tags, deadline, project_id, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task.name,
+                    task.description,
+                    task.tags_str(),
+                    task.deadline,
+                    task.project_id,
+                    task.status.value if isinstance(task.status, Status) else task.status,
+                    now,
+                    now,
+                ),
+            )
+        task.id = cur.lastrowid
+        task.created_at = now
+        task.updated_at = now
+        return task
+
+    def update(self, task: Task) -> Task:
+        if task.id is None:
+            raise ValueError("Cannot update a Task with no id")
+        now = _now_utc()
+        _log("UPDATE", "tasks", f"id={task.id}")
+        with self._conn:
+            self._conn.execute(
+                """
+                UPDATE tasks
+                SET name=?, description=?, tags=?, deadline=?, project_id=?, status=?, updated_at=?
+                WHERE id=?
+                """,
+                (
+                    task.name,
+                    task.description,
+                    task.tags_str(),
+                    task.deadline,
+                    task.project_id,
+                    task.status.value if isinstance(task.status, Status) else task.status,
+                    now,
+                    task.id,
+                ),
+            )
+        task.updated_at = now
+        return task
+
+    def delete(self, task_id: int) -> bool:
+        _log("DELETE", "tasks", f"id={task_id}")
+        with self._conn:
+            cur = self._conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        return cur.rowcount > 0
+
+
+# ══════════════════════════════════════════════════════════════════ Project repo
+
+
+class ProjectRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    # ------------------------------------------------------------------ read
+
+    def get_by_id(self, project_id: int) -> Optional[Project]:
+        _log("SELECT", "projects", f"id={project_id}")
+        row = self._conn.execute(
+            "SELECT * FROM projects WHERE id = ?", (project_id,)
+        ).fetchone()
+        return _row_to_project(row) if row else None
+
+    def list_all(self) -> list[Project]:
+        _log("SELECT", "projects", "all")
+        rows = self._conn.execute("SELECT * FROM projects").fetchall()
+        return [_row_to_project(r) for r in rows]
+
+    def list_filtered(
+        self,
+        f: Optional[ProjectFilter] = None,
+        sort: Optional[SortSpec] = None,
+    ) -> list[Project]:
+        sql, params = build_project_query(f, sort)
+        _log("SELECT", "projects", f"filter={f!r} sort={sort!r}")
+        rows = self._conn.execute(sql, params).fetchall()
+        return [_row_to_project(r) for r in rows]
+
+    # ------------------------------------------------------------------ write
+
+    def insert(self, project: Project) -> Project:
+        now = _now_utc()
+        _log("INSERT", "projects", f"name={project.name!r}")
+        with self._conn:
+            cur = self._conn.execute(
+                """
+                INSERT INTO projects (name, description, start_date, deployment_date, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    project.name,
+                    project.description,
+                    project.start_date,
+                    project.deployment_date,
+                    now,
+                    now,
+                ),
+            )
+        project.id = cur.lastrowid
+        project.created_at = now
+        project.updated_at = now
+        return project
+
+    def update(self, project: Project) -> Project:
+        if project.id is None:
+            raise ValueError("Cannot update a Project with no id")
+        now = _now_utc()
+        _log("UPDATE", "projects", f"id={project.id}")
+        with self._conn:
+            self._conn.execute(
+                """
+                UPDATE projects
+                SET name=?, description=?, start_date=?, deployment_date=?, updated_at=?
+                WHERE id=?
+                """,
+                (
+                    project.name,
+                    project.description,
+                    project.start_date,
+                    project.deployment_date,
+                    now,
+                    project.id,
+                ),
+            )
+        project.updated_at = now
+        return project
+
+    def delete(self, project_id: int) -> bool:
+        """Hard delete: removes all child tasks first, then the project — single transaction."""
+        _log("DELETE", "tasks", f"cascade for project_id={project_id}")
+        _log("DELETE", "projects", f"id={project_id}")
+        with self._conn:
+            self._conn.execute("DELETE FROM tasks WHERE project_id = ?", (project_id,))
+            cur = self._conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        return cur.rowcount > 0
+
+    def tasks_for_project(self, project_id: int) -> list[Task]:
+        """Return all tasks belonging to a project (used by show/detail views)."""
+        _log("SELECT", "tasks", f"project_id={project_id}")
+        rows = self._conn.execute(
+            "SELECT * FROM tasks WHERE project_id = ? ORDER BY status, deadline NULLS LAST",
+            (project_id,),
+        ).fetchall()
+        return [_row_to_task(r) for r in rows]
+
+
+# ------------------------------------------------------------------ row mappers
+
+
+def _row_to_task(row: sqlite3.Row) -> Task:
+    return Task(
+        id=row["id"],
+        name=row["name"],
+        description=row["description"],
+        tags=Task.tags_from_str(row["tags"]),
+        deadline=row["deadline"],
+        project_id=row["project_id"],
+        status=Status(row["status"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _row_to_project(row: sqlite3.Row) -> Project:
+    return Project(
+        id=row["id"],
+        name=row["name"],
+        description=row["description"],
+        start_date=row["start_date"],
+        deployment_date=row["deployment_date"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
