@@ -9,7 +9,7 @@ from typing import Optional
 import platformdirs
 
 # Current schema version — bump when adding migrations.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _DEFAULT_DB_PATH: Optional[Path] = None
 
@@ -84,6 +84,27 @@ BEGIN
 END;
 """
 
+_DDL_TASK_EVENTS = """
+CREATE TABLE IF NOT EXISTS task_events (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id       INTEGER NOT NULL,
+    event_type    TEXT    NOT NULL,
+    field_name    TEXT,
+    old_value     TEXT,
+    new_value     TEXT,
+    changed_at    TEXT    NOT NULL,
+    task_snapshot TEXT
+);
+"""
+
+_DDL_TASK_EVENTS_IDX_TASK = """
+CREATE INDEX IF NOT EXISTS idx_task_events_task_id ON task_events(task_id);
+"""
+
+_DDL_TASK_EVENTS_IDX_TIME = """
+CREATE INDEX IF NOT EXISTS idx_task_events_changed_at ON task_events(changed_at);
+"""
+
 _DDL_TASK_STATUS_CHECK_UPDATE = """
 CREATE TRIGGER IF NOT EXISTS tasks_status_check_update
 BEFORE UPDATE OF status ON tasks
@@ -120,8 +141,7 @@ def init_db(conn: sqlite3.Connection) -> None:
 
 def _run_migrations(conn: sqlite3.Connection, from_version: int) -> None:
     """Apply incremental migrations from `from_version` up to SCHEMA_VERSION."""
-    # Placeholder — add migration steps here as the schema evolves.
-    # Example:
-    #   if from_version < 2:
-    #       conn.execute("ALTER TABLE tasks ADD COLUMN priority TEXT")
-    pass
+    if from_version < 2:
+        conn.execute(_DDL_TASK_EVENTS)
+        conn.execute(_DDL_TASK_EVENTS_IDX_TASK)
+        conn.execute(_DDL_TASK_EVENTS_IDX_TIME)

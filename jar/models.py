@@ -26,6 +26,12 @@ class TagEnum(str, Enum):
 SUGGESTED_TAGS: list[str] = [t.value for t in TagEnum]
 
 
+class EventType(str, Enum):
+    CREATED = "created"
+    UPDATED = "updated"
+    DELETED = "deleted"
+
+
 @dataclass
 class Task:
     name: str
@@ -63,6 +69,30 @@ class Task:
             "status": self.status.value if isinstance(self.status, Status) else self.status,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+        }
+
+
+@dataclass
+class TaskEvent:
+    task_id: int
+    event_type: EventType
+    changed_at: str                      # ISO-8601 UTC
+    id: Optional[int] = None
+    field_name: Optional[str] = None     # NULL for created/deleted events
+    old_value: Optional[str] = None      # NULL for created events
+    new_value: Optional[str] = None      # NULL for deleted events
+    task_snapshot: Optional[str] = None  # JSON blob of full task state
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "task_id": self.task_id,
+            "event_type": self.event_type.value if isinstance(self.event_type, EventType) else self.event_type,
+            "field_name": self.field_name,
+            "old_value": self.old_value,
+            "new_value": self.new_value,
+            "changed_at": self.changed_at,
+            "task_snapshot": self.task_snapshot,
         }
 
 

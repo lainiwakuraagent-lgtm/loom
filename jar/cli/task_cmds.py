@@ -11,7 +11,7 @@ from rich.console import Console
 
 from ..db import get_connection, init_db
 from ..filters import TaskFilter, SortSpec
-from ..formatters import format_task_detail, format_tasks
+from ..formatters import format_task_detail, format_task_events, format_tasks
 from ..models import SUGGESTED_TAGS, Status
 from ..service import TaskService
 
@@ -284,5 +284,36 @@ def task_show(jar: JarContext, task_id: int) -> None:
             _err.print(f"[red]Task #{task_id} not found.[/red]")
             sys.exit(1)
         format_task_detail(t)
+    finally:
+        conn.close()
+
+
+# ══════════════════════════════════════════════════════════════════ history
+
+@task.command("history")
+@click.argument("task_id", type=int)
+@click.option(
+    "--format", "fmt",
+    default=None,
+    type=click.Choice(["table", "json", "csv", "plain"]),
+    help="Override global output format.",
+)
+@pass_jar
+def task_history(jar: JarContext, task_id: int, fmt: Optional[str]) -> None:
+    """Show the full audit history for a task.
+
+    Records every creation, field change, and deletion event in chronological
+    order. History is preserved even after a task is deleted.
+    """
+    svc, conn = _get_service(jar)
+    try:
+        events = svc.get_history(task_id)
+        if not events:
+            _err.print(f"[dim]No history found for task #{task_id}.[/dim]")
+        else:
+            format_task_events(events, fmt=fmt or jar.fmt)
+    except Exception as exc:
+        _err.print(f"[red]Error:[/red] {exc}")
+        sys.exit(1)
     finally:
         conn.close()

@@ -9,6 +9,7 @@ A Python CLI and library for managing projects and tasks with flexible filtering
 - **Projects and tasks are independent** — a project can have no tasks, and a task can exist without a project.
 - **Rich filtering and sorting** on every list command.
 - **Four output formats**: `table` (default, colour-coded), `json`, `csv`, `plain`.
+- **Task lifecycle tracking** — every creation, field change, and deletion is recorded as an immutable event. History is preserved even after a task is deleted.
 - **Usable as a library** — the service layer is fully decoupled from the CLI.
 - **Structured logging** — DB-level logs and service-level logs written to separate rotating files.
 - **Project deletion is API-only** — protects against accidental cascade-deletes from the command line.
@@ -135,6 +136,11 @@ jar task edit 12 --project ""           # detach from project (make standalone)
 # Delete (with confirmation)
 jar task delete 12
 jar task delete 12 --yes                # skip confirmation
+
+# Show full audit history for a task
+jar task history 12
+jar task history 12 --format json
+jar task history 42                     # works even if task #42 was deleted
 ```
 
 ### --sort syntax
@@ -216,6 +222,62 @@ conn.close()
 
 ---
 
+## Task lifecycle tracking
+
+Every write to a task is recorded in the `task_events` table (schema v2). The event log is immutable — events are never deleted, even when the task itself is.
+
+### Event types
+
+| Event | When recorded |
+|---|---|
+| `created` | Task is first created — full snapshot of initial state |
+| `updated` | Any tracked field changes — one row per changed field |
+| `deleted` | Task is deleted — full snapshot of final state |
+
+### Tracked fields
+
+`name`, `description`, `tags`, `deadline`, `status`, `project_id`
+
+### Querying history
+
+**CLI:**
+```bash
+jar task history <id>                  # table view (default)
+jar task history <id> --format json    # JSON array of events
+jar task history <id> --format csv     # CSV export
+```
+
+**Python API:**
+```python
+from jar.service import TaskService
+from jar.db import get_connection, init_db
+
+conn = get_connection()
+init_db(conn)
+ts = TaskService(conn)
+
+events = ts.get_history(task_id=5)
+for e in events:
+    print(e.event_type, e.field_name, e.old_value, "→", e.new_value, "@", e.changed_at)
+```
+
+Each `TaskEvent` also carries a `task_snapshot` field — a JSON string of the complete task state at the time the event was recorded, enabling point-in-time reconstruction without replaying the entire log.
+
+### TaskEvent model
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | int | auto-assigned |
+| `task_id` | int | references the task (no FK — survives deletion) |
+| `event_type` | `EventType` | `created` / `updated` / `deleted` |
+| `field_name` | str | which field changed; `null` for `created`/`deleted` events |
+| `old_value` | str | previous value as string; `null` for `created` events |
+| `new_value` | str | new value as string; `null` for `deleted` events |
+| `changed_at` | str (ISO-8601 UTC) | when the change occurred |
+| `task_snapshot` | str (JSON) | full task state at time of event |
+
+---
+
 ## Logging
 
 Two rotating log files are written automatically:
@@ -281,7 +343,7 @@ With a custom database path:
 }
 ```
 
-Restart Claude Desktop after saving the config. The 11 JAR tools will appear in Claude's tool list.
+Restart Claude Desktop after saving the config. The 12 JAR tools will appear in Claude's tool list.
 
 ### Available tools
 
@@ -298,6 +360,7 @@ Restart Claude Desktop after saving the config. The 11 JAR tools will appear in 
 | `task_update` | Update any task field; omit to keep, pass `null` to clear |
 | `task_delete` | Delete a task |
 | `task_list` | List/filter/sort tasks |
+| `task_history` | Retrieve the full audit event log for a task by `task_id` |
 
 ---
 
@@ -308,4 +371,4 @@ pip install pytest
 pytest tests/ -v
 ```
 
-119 tests covering models, filters (SQL builder), repository (in-memory SQLite), and service layer — including cascade-delete verification.
+147 tests covering models, filters (SQL builder), repository (in-memory SQLite), service layer, and task event lifecycle — including cascade-delete verification and event-survival-after-deletion checks.

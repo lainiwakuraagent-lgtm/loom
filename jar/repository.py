@@ -8,7 +8,7 @@ from typing import Optional
 
 from .filters import ProjectFilter, SortSpec, TaskFilter, build_project_query, build_task_query
 from .logging_config import get_db_logger
-from .models import Project, Status, Task
+from .models import EventType, Project, Status, Task, TaskEvent
 
 
 def _now_utc() -> str:
@@ -108,6 +108,44 @@ class TaskRepository:
         with self._conn:
             cur = self._conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         return cur.rowcount > 0
+
+
+# ══════════════════════════════════════════════════════════════════ TaskEvent repo
+
+
+class TaskEventRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def insert(self, event: TaskEvent) -> TaskEvent:
+        _log("INSERT", "task_events", f"task_id={event.task_id} type={event.event_type} field={event.field_name}")
+        with self._conn:
+            cur = self._conn.execute(
+                """
+                INSERT INTO task_events
+                    (task_id, event_type, field_name, old_value, new_value, changed_at, task_snapshot)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.task_id,
+                    event.event_type.value if isinstance(event.event_type, EventType) else event.event_type,
+                    event.field_name,
+                    event.old_value,
+                    event.new_value,
+                    event.changed_at,
+                    event.task_snapshot,
+                ),
+            )
+        event.id = cur.lastrowid
+        return event
+
+    def list_for_task(self, task_id: int) -> list[TaskEvent]:
+        _log("SELECT", "task_events", f"task_id={task_id}")
+        rows = self._conn.execute(
+            "SELECT * FROM task_events WHERE task_id = ? ORDER BY changed_at ASC, id ASC",
+            (task_id,),
+        ).fetchall()
+        return [_row_to_task_event(r) for r in rows]
 
 
 # ══════════════════════════════════════════════════════════════════ Project repo
@@ -223,6 +261,19 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         status=Status(row["status"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+    )
+
+
+def _row_to_task_event(row: sqlite3.Row) -> TaskEvent:
+    return TaskEvent(
+        id=row["id"],
+        task_id=row["task_id"],
+        event_type=EventType(row["event_type"]),
+        field_name=row["field_name"],
+        old_value=row["old_value"],
+        new_value=row["new_value"],
+        changed_at=row["changed_at"],
+        task_snapshot=row["task_snapshot"],
     )
 
 

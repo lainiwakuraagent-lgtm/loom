@@ -4,7 +4,8 @@ import pytest
 from jar.db import get_connection, init_db
 from jar.filters import ProjectFilter, SortSpec, TaskFilter
 from jar.models import Project, Status, Task
-from jar.repository import ProjectRepository, TaskRepository
+from jar.models import EventType, TaskEvent
+from jar.repository import ProjectRepository, TaskEventRepository, TaskRepository
 
 
 @pytest.fixture
@@ -23,6 +24,11 @@ def project_repo(conn):
 @pytest.fixture
 def task_repo(conn):
     return TaskRepository(conn)
+
+
+@pytest.fixture
+def event_repo(conn):
+    return TaskEventRepository(conn)
 
 
 @pytest.fixture
@@ -277,3 +283,87 @@ class TestTaskRepositoryFilter:
         )
         deadlines = [t.deadline for t in results if t.deadline]
         assert deadlines == sorted(deadlines)
+
+
+# ══════════════════════════════════════════════════════ TaskEventRepository
+
+
+def _make_event(task_id: int, event_type: EventType = EventType.CREATED, **kwargs) -> TaskEvent:
+    return TaskEvent(
+        task_id=task_id,
+        event_type=event_type,
+        changed_at="2026-01-01T00:00:00Z",
+        **kwargs,
+    )
+
+
+class TestTaskEventRepository:
+    def test_insert_returns_with_id(self, event_repo):
+        event = event_repo.insert(_make_event(task_id=1))
+        assert event.id is not None
+        assert event.id > 0
+
+    def test_roundtrip_created_event(self, event_repo):
+        event = event_repo.insert(_make_event(task_id=42))
+        results = event_repo.list_for_task(42)
+        assert len(results) == 1
+        r = results[0]
+        assert r.task_id == 42
+        assert r.event_type == EventType.CREATED
+        assert r.field_name is None
+        assert r.old_value is None
+        assert r.new_value is None
+        assert r.changed_at == "2026-01-01T00:00:00Z"
+
+    def test_roundtrip_updated_event(self, event_repo):
+        event_repo.insert(TaskEvent(
+            task_id=5,
+            event_type=EventType.UPDATED,
+            changed_at="2026-02-01T12:00:00Z",
+            field_name="status",
+            old_value="todo",
+            new_value="in_progress",
+        ))
+        results = event_repo.list_for_task(5)
+        assert len(results) == 1
+        r = results[0]
+        assert r.event_type == EventType.UPDATED
+        assert r.field_name == "status"
+        assert r.old_value == "todo"
+        assert r.new_value == "in_progress"
+
+    def test_roundtrip_deleted_event(self, event_repo):
+        event_repo.insert(TaskEvent(
+            task_id=7,
+            event_type=EventType.DELETED,
+            changed_at="2026-03-01T08:00:00Z",
+        ))
+        results = event_repo.list_for_task(7)
+        assert len(results) == 1
+        assert results[0].event_type == EventType.DELETED
+        assert results[0].new_value is None
+
+    def test_list_empty_for_unknown_task(self, event_repo):
+        assert event_repo.list_for_task(99999) == []
+
+    def test_list_ordered_by_changed_at(self, event_repo):
+        event_repo.insert(TaskEvent(task_id=10, event_type=EventType.UPDATED,
+                                    changed_at="2026-01-02T00:00:00Z", field_name="name"))
+        event_repo.insert(TaskEvent(task_id=10, event_type=EventType.CREATED,
+                                    changed_at="2026-01-01T00:00:00Z"))
+        results = event_repo.list_for_task(10)
+        assert results[0].event_type == EventType.CREATED
+        assert results[1].event_type == EventType.UPDATED
+
+    def test_events_survive_task_deletion(self, conn, task_repo, event_repo):
+        """Core requirement: history must outlive the task row."""
+        task = task_repo.insert(Task(name="Mortal task"))
+        event_repo.insert(_make_event(task_id=task.id))
+
+        task_repo.delete(task.id)
+        assert task_repo.get_by_id(task.id) is None
+
+        # Events still accessible after task is gone
+        remaining = event_repo.list_for_task(task.id)
+        assert len(remaining) == 1
+        assert remaining[0].event_type == EventType.CREATED

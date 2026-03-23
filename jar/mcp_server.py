@@ -311,6 +311,24 @@ _TOOLS: list[Tool] = [
         },
     ),
     Tool(
+        name="task_history",
+        description=(
+            "Retrieve the full audit event log for a task. "
+            "Returns all creation, field-change, and deletion events in chronological order. "
+            "History is preserved even after the task is deleted."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "integer",
+                    "description": "Task ID to retrieve history for",
+                },
+            },
+            "required": ["task_id"],
+        },
+    ),
+    Tool(
         name="task_list",
         description="List tasks with optional filtering and sorting.",
         inputSchema={
@@ -467,6 +485,11 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
     if name == "task_delete":
         deleted = _ts.delete(args["id"])
         return _ok({"deleted": deleted})
+
+    # ── task_history ──────────────────────────────────────────────────────
+    if name == "task_history":
+        events = _ts.get_history(args["task_id"])
+        return _ok([e.to_dict() for e in events])
 
     # ── task_list ─────────────────────────────────────────────────────────
     if name == "task_list":

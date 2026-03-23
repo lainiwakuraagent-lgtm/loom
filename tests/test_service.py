@@ -3,7 +3,8 @@
 import pytest
 from jar.db import get_connection, init_db
 from jar.filters import ProjectFilter, SortSpec, TaskFilter
-from jar.models import Status
+import json
+from jar.models import EventType, Status
 from jar.service import ProjectService, TaskService
 
 
@@ -306,3 +307,88 @@ class TestTaskServiceListFiltered:
             TaskFilter(deadline_after="2025-02-01", deadline_before="2025-04-01")
         )
         assert len(results) == 1 and results[0].name == "A"
+
+
+# ══════════════════════════════════════════════════════ TaskService history
+
+
+class TestTaskServiceHistory:
+    def test_create_emits_created_event(self, ts):
+        t = ts.create(name="My task")
+        events = ts.get_history(t.id)
+        assert len(events) == 1
+        assert events[0].event_type == EventType.CREATED
+        assert events[0].task_id == t.id
+
+    def test_create_event_has_valid_snapshot(self, ts):
+        t = ts.create(name="Snapshot task", status="in_progress")
+        events = ts.get_history(t.id)
+        snapshot = json.loads(events[0].task_snapshot)
+        assert snapshot["name"] == "Snapshot task"
+        assert snapshot["status"] == "in_progress"
+
+    def test_update_status_emits_field_event(self, ts):
+        t = ts.create(name="Status task")
+        ts.update(t.id, status="done")
+        events = ts.get_history(t.id)
+        updated = [e for e in events if e.event_type == EventType.UPDATED]
+        assert len(updated) == 1
+        assert updated[0].field_name == "status"
+        assert updated[0].old_value == "todo"
+        assert updated[0].new_value == "done"
+
+    def test_update_multiple_fields_emits_multiple_events(self, ts):
+        t = ts.create(name="Multi-field")
+        ts.update(t.id, name="Renamed", status="in_progress")
+        events = ts.get_history(t.id)
+        updated = [e for e in events if e.event_type == EventType.UPDATED]
+        fields = {e.field_name for e in updated}
+        assert "name" in fields
+        assert "status" in fields
+
+    def test_update_no_change_emits_no_events(self, ts):
+        t = ts.create(name="Stable", status="todo")
+        # Pass same values — no actual change
+        ts.update(t.id, name="Stable", status="todo")
+        events = ts.get_history(t.id)
+        # Only the initial CREATED event, no UPDATED events
+        assert len(events) == 1
+        assert events[0].event_type == EventType.CREATED
+
+    def test_delete_emits_deleted_event(self, ts):
+        t = ts.create(name="Doomed")
+        ts.delete(t.id)
+        events = ts.get_history(t.id)
+        assert events[-1].event_type == EventType.DELETED
+
+    def test_history_survives_task_deletion(self, ts):
+        t = ts.create(name="Gone soon")
+        ts.update(t.id, status="done")
+        ts.delete(t.id)
+        events = ts.get_history(t.id)
+        event_types = [e.event_type for e in events]
+        assert EventType.CREATED in event_types
+        assert EventType.UPDATED in event_types
+        assert EventType.DELETED in event_types
+
+    def test_history_empty_for_unknown_task(self, ts):
+        assert ts.get_history(99999) == []
+
+    def test_tags_change_tracked_with_sorted_format(self, ts):
+        t = ts.create(name="Tagger", tags=["feature"])
+        ts.update(t.id, tags=["bug", "chore"])
+        events = ts.get_history(t.id)
+        tag_event = next(e for e in events if e.field_name == "tags")
+        assert tag_event.old_value == "feature"
+        # sorted: bug, chore
+        assert tag_event.new_value == "bug,chore"
+
+    def test_all_snapshots_are_valid_json(self, ts):
+        t = ts.create(name="Snapshot check")
+        ts.update(t.id, status="in_progress")
+        ts.delete(t.id)
+        for e in ts.get_history(t.id):
+            assert e.task_snapshot is not None
+            parsed = json.loads(e.task_snapshot)
+            assert isinstance(parsed, dict)
+            assert "name" in parsed

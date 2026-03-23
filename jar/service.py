@@ -6,20 +6,43 @@ via the service logger (INFO on entry/exit, ERROR on exception).
 
 from __future__ import annotations
 
+import json
 import sqlite3
+from dataclasses import replace
+from datetime import datetime, timezone
 from typing import Optional
 
 from .filters import ProjectFilter, SortSpec, TaskFilter
 from .logging_config import get_service_logger
-from .models import Project, Status, Task
-from .repository import ProjectRepository, TaskRepository
+from .models import EventType, Project, Status, Task, TaskEvent
+from .repository import ProjectRepository, TaskEventRepository, TaskRepository
 
 # Sentinel for "caller did not supply this argument" (distinct from None).
 _MISSING = object()
 
+# Fields tracked in the lifecycle event log.
+_TRACKED_FIELDS = ("name", "description", "tags", "deadline", "status", "project_id")
+
 # ------------------------------------------------------------------ helpers
 
 _VALID_STATUSES = {s.value for s in Status}
+
+
+def _now_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _field_to_str(field: str, value: object) -> Optional[str]:
+    """Normalise a task field value to a storable string for event comparison."""
+    if value is None:
+        return None
+    if field == "tags":
+        # Sort for stable comparison — tag order is not semantically meaningful.
+        tags = list(value)  # type: ignore[arg-type]
+        return ",".join(sorted(tags)) if tags else None
+    if isinstance(value, Status):
+        return value.value
+    return str(value)
 
 
 def _slog(method: str, detail: str = "") -> None:
@@ -158,6 +181,7 @@ class TaskService:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._repo = TaskRepository(conn)
         self._project_repo = ProjectRepository(conn)
+        self._event_repo = TaskEventRepository(conn)
 
     # ------------------------------------------------------------------ read
 
@@ -211,6 +235,7 @@ class TaskService:
                 status=Status(status),
             )
             result = self._repo.insert(task)
+            self._record_created(result)
             _slog_result("TaskService.create", f"id={result.id}")
             return result
         except Exception as exc:
@@ -233,6 +258,9 @@ class TaskService:
             if task is None:
                 raise ValueError(f"Task {task_id} not found")
 
+            # Snapshot old state before any mutations.
+            old_task = replace(task, tags=list(task.tags))
+
             if name is not None:
                 task.name = name
             if description is not _MISSING:
@@ -250,6 +278,7 @@ class TaskService:
                 task.status = Status(status)
 
             result = self._repo.update(task)
+            self._record_field_changes(old_task, result)
             _slog_result("TaskService.update", f"id={result.id}")
             return result
         except Exception as exc:
@@ -259,6 +288,11 @@ class TaskService:
     def delete(self, task_id: int) -> bool:
         _slog("TaskService.delete", f"id={task_id}")
         try:
+            task = self._repo.get_by_id(task_id)
+            if task is None:
+                _slog_result("TaskService.delete", "deleted=False (not found)")
+                return False
+            self._record_deleted(task)
             result = self._repo.delete(task_id)
             _slog_result("TaskService.delete", f"deleted={result}")
             return result
@@ -266,8 +300,56 @@ class TaskService:
             _slog_error("TaskService.delete", exc)
             raise
 
+    def get_history(self, task_id: int) -> list[TaskEvent]:
+        _slog("TaskService.get_history", f"task_id={task_id}")
+        try:
+            result = self._event_repo.list_for_task(task_id)
+            _slog_result("TaskService.get_history", f"count={len(result)}")
+            return result
+        except Exception as exc:
+            _slog_error("TaskService.get_history", exc)
+            raise
+
     # ------------------------------------------------------------------ private
 
     def _assert_project_exists(self, project_id: int) -> None:
         if self._project_repo.get_by_id(project_id) is None:
             raise ValueError(f"Project {project_id} does not exist")
+
+    def _record_created(self, task: Task) -> None:
+        event = TaskEvent(
+            task_id=task.id,  # type: ignore[arg-type]
+            event_type=EventType.CREATED,
+            changed_at=task.created_at,  # type: ignore[arg-type]
+            task_snapshot=json.dumps(task.to_dict(), default=str),
+        )
+        self._event_repo.insert(event)
+
+    def _record_field_changes(self, old: Task, new: Task) -> None:
+        snapshot = json.dumps(new.to_dict(), default=str)
+        changed_at = new.updated_at  # type: ignore[arg-type]
+
+        for field in _TRACKED_FIELDS:
+            old_str = _field_to_str(field, getattr(old, field))
+            new_str = _field_to_str(field, getattr(new, field))
+            if old_str == new_str:
+                continue
+            event = TaskEvent(
+                task_id=new.id,  # type: ignore[arg-type]
+                event_type=EventType.UPDATED,
+                field_name=field,
+                old_value=old_str,
+                new_value=new_str,
+                changed_at=changed_at,
+                task_snapshot=snapshot,
+            )
+            self._event_repo.insert(event)
+
+    def _record_deleted(self, task: Task) -> None:
+        event = TaskEvent(
+            task_id=task.id,  # type: ignore[arg-type]
+            event_type=EventType.DELETED,
+            changed_at=_now_utc(),
+            task_snapshot=json.dumps(task.to_dict(), default=str),
+        )
+        self._event_repo.insert(event)
