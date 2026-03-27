@@ -14,9 +14,11 @@ import json
 from typing import Any
 
 from mcp.server import Server
+import click
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+from jar.analytics import AnalyticsService
 from jar.db import get_connection, init_db
 from jar.filters import ProjectFilter, SortSpec, TaskFilter
 from jar.service import ProjectService, TaskService
@@ -30,6 +32,7 @@ _conn = get_connection()
 init_db(_conn)
 _ps = ProjectService(_conn)
 _ts = TaskService(_conn)
+_as = AnalyticsService(_conn)
 
 app = Server("jar")
 
@@ -381,6 +384,74 @@ _TOOLS: list[Tool] = [
             },
         },
     ),
+    # ── analytics ─────────────────────────────────────────────────────────
+    Tool(
+        name="analytics_summary",
+        description="Health dashboard — key numbers from all analytics metrics.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "since": {"type": ["string", "null"], "description": "Scope to tasks created on or after this ISO-8601 date"},
+            },
+        },
+    ),
+    Tool(
+        name="analytics_deadline_health",
+        description="Deadline push rate and miss rate broken down by tag and project.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "since":      {"type": ["string", "null"], "description": "ISO-8601 date — scope to tasks created on or after"},
+                "project_id": {"type": ["integer", "null"], "description": "Filter to a specific project"},
+                "tag":        {"type": ["string", "null"], "description": "Filter to tasks with this tag"},
+            },
+        },
+    ),
+    Tool(
+        name="analytics_velocity",
+        description="Time-to-done distribution and completion velocity per tag.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "since":      {"type": ["string", "null"]},
+                "project_id": {"type": ["integer", "null"]},
+                "tag":        {"type": ["string", "null"]},
+            },
+        },
+    ),
+    Tool(
+        name="analytics_capacity",
+        description="Deadline clustering (overloaded weeks) and context switching load.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "since": {"type": ["string", "null"]},
+            },
+        },
+    ),
+    Tool(
+        name="analytics_behavior",
+        description="Task rot (age in todo), recovery lag, and status reversals.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "since":      {"type": ["string", "null"]},
+                "project_id": {"type": ["integer", "null"]},
+                "tag":        {"type": ["string", "null"]},
+            },
+        },
+    ),
+    Tool(
+        name="analytics_realism",
+        description="Deadline Realism Score, deadline horizon at creation, and abandonment rate.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "since": {"type": ["string", "null"]},
+                "tag":   {"type": ["string", "null"]},
+            },
+        },
+    ),
 ]
 
 # ── handlers ───────────────────────────────────────────────────────────────
@@ -506,13 +577,53 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
         result = _ts.list_filtered(tf, sort=_sort_spec(args))
         return _ok([t.to_dict() for t in result])
 
+    # ── analytics_summary ─────────────────────────────────────────────────
+    if name == "analytics_summary":
+        return _ok(_as.summary(since=args.get("since")))
+
+    # ── analytics_deadline_health ─────────────────────────────────────────
+    if name == "analytics_deadline_health":
+        return _ok(_as.deadline_health(
+            since=args.get("since"),
+            project_id=args.get("project_id"),
+            tag=args.get("tag"),
+        ))
+
+    # ── analytics_velocity ────────────────────────────────────────────────
+    if name == "analytics_velocity":
+        return _ok(_as.velocity(
+            since=args.get("since"),
+            project_id=args.get("project_id"),
+            tag=args.get("tag"),
+        ))
+
+    # ── analytics_capacity ────────────────────────────────────────────────
+    if name == "analytics_capacity":
+        return _ok(_as.capacity(since=args.get("since")))
+
+    # ── analytics_behavior ────────────────────────────────────────────────
+    if name == "analytics_behavior":
+        return _ok(_as.behavior(
+            since=args.get("since"),
+            project_id=args.get("project_id"),
+            tag=args.get("tag"),
+        ))
+
+    # ── analytics_realism ─────────────────────────────────────────────────
+    if name == "analytics_realism":
+        return _ok(_as.realism(
+            since=args.get("since"),
+            tag=args.get("tag"),
+        ))
+
     raise ValueError(f"Unknown tool: {name!r}")
 
 
-# ── entry point ────────────────────────────────────────────────────────────
+# ── transport implementations ───────────────────────────────────────────────
 
 
-def main() -> None:
+def _run_stdio() -> None:
+    """Run the MCP server over stdio (original behaviour)."""
     async def _run() -> None:
         async with stdio_server() as (read_stream, write_stream):
             await app.run(
@@ -522,6 +633,76 @@ def main() -> None:
             )
 
     asyncio.run(_run())
+
+
+def _run_sse(host: str, port: int) -> None:
+    """Run the MCP server over HTTP/SSE using Starlette + uvicorn."""
+    try:
+        import uvicorn
+        from mcp.server.sse import SseServerTransport
+        from starlette.applications import Starlette
+        from starlette.requests import Request
+        from starlette.responses import Response
+        from starlette.routing import Mount, Route
+    except ImportError as exc:
+        raise SystemExit(
+            f"SSE transport requires uvicorn and starlette: {exc}\n"
+            "Install with: pip install 'uvicorn[standard]>=0.30'"
+        ) from exc
+
+    sse = SseServerTransport("/messages/")
+
+    async def handle_sse(request: Request) -> Response:
+        async with sse.connect_sse(
+            request.scope, request.receive, request._send
+        ) as streams:
+            await app.run(
+                streams[0],
+                streams[1],
+                app.create_initialization_options(),
+            )
+        return Response()  # required — prevents TypeError on client disconnect
+
+    starlette_app = Starlette(
+        routes=[
+            Route("/sse", endpoint=handle_sse),
+            Mount("/messages/", app=sse.handle_post_message),
+        ]
+    )
+
+    uvicorn.run(starlette_app, host=host, port=port)
+
+
+# ── entry point ────────────────────────────────────────────────────────────
+
+
+@click.command()
+@click.option(
+    "--transport",
+    type=click.Choice(["stdio", "sse"], case_sensitive=False),
+    default="stdio",
+    show_default=True,
+    help="Transport to use: stdio (default) or sse (HTTP/SSE web server).",
+)
+@click.option(
+    "--host",
+    default="127.0.0.1",
+    show_default=True,
+    help="Host to bind when using --transport=sse.",
+)
+@click.option(
+    "--port",
+    default=8000,
+    show_default=True,
+    type=int,
+    help="Port to bind when using --transport=sse.",
+)
+def main(transport: str, host: str, port: int) -> None:
+    """JAR MCP server — exposes ProjectService and TaskService as MCP tools."""
+    if transport == "sse":
+        _run_sse(host, port)
+    else:
+        _run_stdio()
 
 
 if __name__ == "__main__":

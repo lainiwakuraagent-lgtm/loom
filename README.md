@@ -22,7 +22,7 @@ A Python CLI and library for managing projects and tasks with flexible filtering
 pip install -e .
 ```
 
-Dependencies installed automatically: `click`, `rich`, `platformdirs`, `mcp`.
+Dependencies installed automatically: `click`, `rich`, `platformdirs`, `mcp`, `uvicorn[standard]`.
 
 ---
 
@@ -306,17 +306,29 @@ Both rotate at **5 MB** with **3 backups**. Directories are created on first run
 
 JAR ships an [MCP](https://modelcontextprotocol.io) server that exposes every service-layer operation as a tool, letting Claude (or any MCP-compatible client) manage your projects and tasks directly.
 
+Two transports are supported: **stdio** (default, for local subprocess use) and **SSE** (HTTP/SSE, for network/web use).
+
 ### Start the server
 
-The server communicates over **stdio** — the MCP client launches it as a subprocess automatically.
-
 ```bash
-jar-mcp          # installed entry point
-# or
-python -m jar.mcp_server
+# stdio — default, MCP client launches it as a subprocess
+jar-mcp
+
+# HTTP/SSE — listens on localhost:8000
+jar-mcp --transport sse
+
+# HTTP/SSE — custom host and port
+jar-mcp --transport sse --host 0.0.0.0 --port 8080
+
+# or run as a module
+python -m jar.mcp_server --transport sse --port 8080
 ```
 
-### Connect Claude Desktop
+SSE clients connect to:
+- `GET  http://<host>:<port>/sse` — open the SSE stream
+- `POST http://<host>:<port>/messages/` — send messages
+
+### Connect Claude Desktop (stdio)
 
 Add the following block to your `claude_desktop_config.json` (usually at `%APPDATA%\Claude\claude_desktop_config.json` on Windows or `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
 
@@ -337,13 +349,27 @@ With a custom database path:
   "mcpServers": {
     "jar": {
       "command": "jar-mcp",
-      "env": { "JAR_DB": "C:/path/to/my.db" }
+      "env": { "JAR_DB": "/path/to/my.db" }
     }
   }
 }
 ```
 
-Restart Claude Desktop after saving the config. The 12 JAR tools will appear in Claude's tool list.
+Restart Claude Desktop after saving the config. The 18 JAR tools will appear in Claude's tool list.
+
+### Connect via SSE (web / remote clients)
+
+Start the SSE server, then point your MCP client at the `/sse` endpoint:
+
+```json
+{
+  "mcpServers": {
+    "jar": {
+      "url": "http://127.0.0.1:8000/sse"
+    }
+  }
+}
+```
 
 ### Available tools
 
@@ -361,6 +387,75 @@ Restart Claude Desktop after saving the config. The 12 JAR tools will appear in 
 | `task_delete` | Delete a task |
 | `task_list` | List/filter/sort tasks |
 | `task_history` | Retrieve the full audit event log for a task by `task_id` |
+| `analytics_summary` | Health dashboard — key numbers from all analytics metrics |
+| `analytics_deadline_health` | Deadline push rate and miss rate by tag / project |
+| `analytics_velocity` | Time-to-done distribution and completion velocity per tag |
+| `analytics_capacity` | Deadline clustering (overloaded weeks) and context switching load |
+| `analytics_behavior` | Task rot, recovery lag, and status reversals |
+| `analytics_realism` | Deadline Realism Score, deadline horizon, and abandonment rate |
+
+---
+
+## Analytics
+
+The analytics module (`jar analytics`) computes read-only metrics from the task lifecycle event log. All metrics are derived from the `task_events` table — no raw data is exposed, only calculated evaluations.
+
+### CLI usage
+
+```bash
+# Health dashboard — most important numbers at a glance
+jar analytics summary
+jar analytics summary --since 2026-01-01 --format json
+
+# Deadline push rate + miss rate
+jar analytics deadline
+jar analytics deadline --tag feature
+jar analytics deadline --project 2 --format json
+
+# Time-to-done distribution + completion velocity
+jar analytics velocity
+jar analytics velocity --since 2026-01-01
+jar analytics velocity --tag bug
+
+# Deadline clustering (overloaded weeks) + context switching
+jar analytics capacity
+jar analytics capacity --since 2026-01-01
+
+# Task rot + recovery lag + status reversals
+jar analytics behavior
+jar analytics behavior --tag feature --project 3
+
+# Deadline Realism Score + horizon + abandonment
+jar analytics realism
+jar analytics realism --tag chore --format json
+```
+
+**Global options for all analytics commands:**
+
+| Option | Description |
+|---|---|
+| `--since YYYY-MM-DD` | Scope to tasks created on or after this date |
+| `--project ID` | Filter to a specific project (where applicable) |
+| `--tag TAG` | Filter to tasks with this tag (where applicable) |
+| `--format table\|json` | Output format (default: `table`) |
+
+### Metrics reference
+
+| Metric | Command | What it answers |
+|---|---|---|
+| Deadline push rate | `deadline` | How often deadlines slip further |
+| Miss rate by tag/project | `deadline` | Where you're over-confident |
+| Time-to-done distribution | `velocity` | Procrastination vs early finish patterns |
+| Completion velocity | `velocity` | Real throughput per category (tasks/week) |
+| Deadline clustering | `capacity` | Overloaded weeks → miss rate spikes |
+| Context switching load | `capacity` | Parallel-work limit detection |
+| Task rot (age in todo) | `behavior` | Ignored tasks / priority creep |
+| Recovery lag | `behavior` | How long tasks drag after their due date |
+| Status reversals | `behavior` | Rework / interruption rate |
+| Deadline Realism Score (DRS) | `realism` | Accuracy when you commit upfront to a deadline |
+| Deadline horizon | `realism` | Reactive vs planned work balance |
+| Abandonment rate | `realism` | Tasks deleted without ever being completed |
+| Summary dashboard | `summary` | Single-glance health view combining all of the above |
 
 ---
 
@@ -371,4 +466,4 @@ pip install pytest
 pytest tests/ -v
 ```
 
-147 tests covering models, filters (SQL builder), repository (in-memory SQLite), service layer, and task event lifecycle — including cascade-delete verification and event-survival-after-deletion checks.
+169 tests covering models, filters (SQL builder), repository (in-memory SQLite), service layer, task event lifecycle, and analytics metrics — including cascade-delete verification and event-survival-after-deletion checks.

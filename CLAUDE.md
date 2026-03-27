@@ -12,6 +12,7 @@ A Python-based CLI + service system for managing projects and tasks with flexibl
 - **Data models:** `dataclasses` + manual ORM layer (no heavy ORM dependency)
 - **Config:** `platformdirs` for locating the DB file and log directories (e.g. `~/.local/share/jar/`)
 - **Logging:** stdlib `logging` — two rotating file handlers writing to separate directories
+- **MCP transport:** `mcp` (stdio) + `starlette` + `uvicorn` (HTTP/SSE web transport)
 
 ### Design Principles
 - Projects and tasks are independent — neither requires the other
@@ -49,34 +50,55 @@ A Python-based CLI + service system for managing projects and tasks with flexibl
 
 > **Constraint note:** Project `description` is validated at write time to contain at least two sections — one labeled/prefixed with `MVP:` and one with `EVALUATION:` (case-insensitive). The CLI will guide the user; the service layer raises `ValueError` on violation.
 
+### task_events (schema v2)
+
+Immutable per-field audit log. Every task creation, field change, and deletion is recorded here. History survives task deletion (no FK constraint on `task_id`).
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK | auto-increment |
+| `task_id` | INTEGER | references the task — NO FK, history survives deletion |
+| `event_type` | TEXT | `created` \| `updated` \| `deleted` |
+| `field_name` | TEXT | which field changed; `null` for `created`/`deleted` events |
+| `old_value` | TEXT | previous value as string; `null` for `created` events |
+| `new_value` | TEXT | new value as string; `null` for `deleted` events |
+| `changed_at` | TEXT (ISO-8601 UTC) | when the event occurred |
+| `task_snapshot` | TEXT (JSON) | full task state at time of event |
+
+Tracked fields: `name`, `description`, `tags`, `deadline`, `status`, `project_id`.
+
 ---
 
-## Files to Create
+## File Listing
 
 ```
 project JAR/
-├── CLAUDE.md                   # this plan
+├── CLAUDE.md                   # this file
 ├── pyproject.toml              # project metadata, deps, entry point
-├── README.md                   # usage docs (generated last)
+├── README.md                   # usage docs
 ├── jar/
 │   ├── __init__.py
-│   ├── db.py                   # DB connection, schema migrations, init
-│   ├── models.py               # dataclasses: Task, Project, enums
-│   ├── repository.py           # data access layer (CRUD + queries)
-│   ├── service.py              # business logic, validation, description constraint
+│   ├── db.py                   # DB connection, schema migrations (v2), init
+│   ├── models.py               # dataclasses: Task, Project, TaskEvent; enums: Status, EventType
+│   ├── repository.py           # data access layer (CRUD + queries + TaskEventRepository)
+│   ├── service.py              # business logic, validation, event recording
 │   ├── filters.py              # filter/sort spec dataclasses + SQL builder
-│   ├── formatters.py           # output: table, json, csv, plain
+│   ├── formatters.py           # output: table, json, csv, plain (tasks, projects, events)
+│   ├── analytics.py            # AnalyticsService — read-only computed metrics from task_events
 │   ├── logging_config.py       # configures both loggers, creates log dirs
+│   ├── mcp_server.py           # MCP server (18 tools); --transport stdio|sse, --host, --port
 │   └── cli/
 │       ├── __init__.py
 │       ├── main.py             # click group entry point
 │       ├── project_cmds.py     # `jar project add|edit|delete|list|show`
-│       └── task_cmds.py        # `jar task add|edit|delete|list|show`
+│       ├── task_cmds.py        # `jar task add|edit|delete|list|show|history`
+│       └── analytics_cmds.py   # `jar analytics summary|deadline|velocity|capacity|behavior|realism`
 └── tests/
     ├── test_models.py
-    ├── test_repository.py
-    ├── test_service.py
-    └── test_filters.py
+    ├── test_filters.py
+    ├── test_repository.py      # includes TaskEventRepository tests
+    ├── test_service.py         # includes TaskServiceHistory tests
+    └── test_analytics.py       # AnalyticsService metric computation tests
 
 # Runtime log directories (created automatically, not committed to VCS)
 ~/.local/share/jar/logs/db/         # DB-level operation logs
@@ -88,7 +110,7 @@ project JAR/
 ## Implementation Steps (in order)
 
 ### Phase 1 — Foundation
-1. Create `pyproject.toml` with dependencies: `click`, `rich`, `platformdirs`
+1. Create `pyproject.toml` with dependencies: `click`, `rich`, `platformdirs`, `mcp`, `uvicorn[standard]`
 2. Implement `jar/models.py` — `Status` enum, `TagEnum` enum, `Task` and `Project` dataclasses
 3. Implement `jar/db.py` — `get_connection()`, `init_db()` (creates tables if not exist, enables `PRAGMA foreign_keys = ON` and WAL mode), schema version table for future migrations
 4. Implement `jar/logging_config.py`:
@@ -176,17 +198,41 @@ jar --db /custom/path/mydb.db task list
 
 ```python
 from jar.service import ProjectService, TaskService
+from jar.analytics import AnalyticsService
 from jar.filters import TaskFilter, SortSpec
-from jar.db import get_connection
+from jar.db import get_connection, init_db
 
 conn = get_connection()
+init_db(conn)
 ts = TaskService(conn)
 
 tasks = ts.list_filtered(
     TaskFilter(status="todo", tags=["bug"], deadline_before="2025-06-01"),
     sort=SortSpec(field="deadline", direction="asc")
 )
+
+# Analytics — read-only, no writes
+svc = AnalyticsService(conn)
+summary = svc.summary()
+deadline_health = svc.deadline_health(since="2026-01-01", tag="feature")
+velocity = svc.velocity()
+capacity = svc.capacity()
+behavior = svc.behavior(project_id=3)
+realism = svc.realism(tag="bug")
 ```
+
+### AnalyticsService methods
+
+All methods are read-only and return plain Python dicts. They accept optional `since` (ISO date string), `project_id` (int), and `tag` (str) filters to scope the analysis.
+
+| Method | Filters | What it computes |
+|---|---|---|
+| `summary(since)` | `since` | Compact health dashboard combining key numbers from all metrics |
+| `deadline_health(since, project_id, tag)` | all | Push rate + miss rate by tag/project |
+| `velocity(since, project_id, tag)` | all | Time-to-done distribution + completions per week |
+| `capacity(since)` | `since` | Deadline clustering + context switching load |
+| `behavior(since, project_id, tag)` | all | Task rot + recovery lag + status reversals |
+| `realism(since, tag)` | `since`, `tag` | Deadline Realism Score + horizon + abandonment rate |
 
 ---
 
