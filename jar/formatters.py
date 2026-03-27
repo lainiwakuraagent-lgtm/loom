@@ -25,6 +25,7 @@ _STATUS_STYLES = {
     "todo":        "yellow",
     "in_progress": "cyan",
     "done":        "green",
+    "failed":      "red",
 }
 
 _EVENT_TYPE_STYLES = {

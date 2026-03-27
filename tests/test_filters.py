@@ -109,7 +109,7 @@ class TestBuildTaskQuery:
         sql, _ = build_task_query(TaskFilter(overdue=True))
         assert "deadline IS NOT NULL" in sql
         assert "deadline < date('now')" in sql
-        assert "status != 'done'" in sql
+        assert "status NOT IN ('done', 'failed')" in sql
 
     def test_overdue_false_excluded(self):
         sql, _ = build_task_query(TaskFilter(overdue=False))

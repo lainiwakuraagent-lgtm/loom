@@ -245,7 +245,7 @@ _TOOLS: list[Tool] = [
                 },
                 "status": {
                     "type": "string",
-                    "enum": ["todo", "in_progress", "done"],
+                    "enum": ["todo", "in_progress", "done", "failed"],
                     "default": "todo",
                 },
             },
@@ -296,7 +296,7 @@ _TOOLS: list[Tool] = [
                 },
                 "status": {
                     "type": "string",
-                    "enum": ["todo", "in_progress", "done"],
+                    "enum": ["todo", "in_progress", "done", "failed"],
                 },
             },
             "required": ["id"],
@@ -339,7 +339,7 @@ _TOOLS: list[Tool] = [
             "properties": {
                 "status": {
                     "type": "string",
-                    "enum": ["todo", "in_progress", "done"],
+                    "enum": ["todo", "in_progress", "done", "failed"],
                 },
                 "project_id": {
                     "type": "integer",

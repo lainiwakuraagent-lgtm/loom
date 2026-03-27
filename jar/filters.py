@@ -85,8 +85,8 @@ def build_task_query(
             params.append(f.deadline_after)
 
         if f.overdue:
-            # Overdue = has a deadline, deadline is before today, and not yet done.
-            clauses.append("deadline IS NOT NULL AND deadline < date('now') AND status != 'done'")
+            # Overdue = has a deadline, deadline is before today, and not yet terminal.
+            clauses.append("deadline IS NOT NULL AND deadline < date('now') AND status NOT IN ('done', 'failed')")
 
         if f.search is not None:
             clauses.append("(name LIKE ? OR description LIKE ?)")

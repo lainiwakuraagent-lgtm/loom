@@ -345,6 +345,8 @@ def behavior_cmd(jar: JarContext, since: Optional[str], project_id: Optional[int
     revt.add_row("Done → in_progress",          str(by_type.get("done_to_in_progress", 0)))
     revt.add_row("Done → todo",                 str(by_type.get("done_to_todo", 0)))
     revt.add_row("In_progress → todo",          str(by_type.get("in_progress_to_todo", 0)))
+    revt.add_row("Failed → in_progress",        str(by_type.get("failed_to_in_progress", 0)))
+    revt.add_row("Failed → todo",               str(by_type.get("failed_to_todo", 0)))
     _out.print(revt)
 
 

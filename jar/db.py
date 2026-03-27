@@ -9,7 +9,7 @@ from typing import Optional
 import platformdirs
 
 # Current schema version — bump when adding migrations.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _DEFAULT_DB_PATH: Optional[Path] = None
 
@@ -80,7 +80,7 @@ CREATE TRIGGER IF NOT EXISTS tasks_status_check
 BEFORE INSERT ON tasks
 BEGIN
     SELECT RAISE(ABORT, 'Invalid status value')
-    WHERE NEW.status NOT IN ('todo', 'in_progress', 'done');
+    WHERE NEW.status NOT IN ('todo', 'in_progress', 'done', 'failed');
 END;
 """
 
@@ -110,7 +110,7 @@ CREATE TRIGGER IF NOT EXISTS tasks_status_check_update
 BEFORE UPDATE OF status ON tasks
 BEGIN
     SELECT RAISE(ABORT, 'Invalid status value')
-    WHERE NEW.status NOT IN ('todo', 'in_progress', 'done');
+    WHERE NEW.status NOT IN ('todo', 'in_progress', 'done', 'failed');
 END;
 """
 
@@ -145,3 +145,8 @@ def _run_migrations(conn: sqlite3.Connection, from_version: int) -> None:
         conn.execute(_DDL_TASK_EVENTS)
         conn.execute(_DDL_TASK_EVENTS_IDX_TASK)
         conn.execute(_DDL_TASK_EVENTS_IDX_TIME)
+    if from_version < 3:
+        conn.execute("DROP TRIGGER IF EXISTS tasks_status_check")
+        conn.execute("DROP TRIGGER IF EXISTS tasks_status_check_update")
+        conn.execute(_DDL_TASK_STATUS_CHECK)
+        conn.execute(_DDL_TASK_STATUS_CHECK_UPDATE)

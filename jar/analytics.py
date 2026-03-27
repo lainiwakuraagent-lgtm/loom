@@ -263,7 +263,7 @@ class AnalyticsService:
                     miss_proj[pid_str]["missed"] += 1
 
         overdue_count: int = self._conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status != 'done' AND deadline IS NOT NULL AND deadline < ?",
+            "SELECT COUNT(*) FROM tasks WHERE status NOT IN ('done', 'failed') AND deadline IS NOT NULL AND deadline < ?",
             (today,),
         ).fetchone()[0]
 
@@ -622,6 +622,8 @@ class AnalyticsService:
             ("done", "in_progress"): "done_to_in_progress",
             ("done", "todo"): "done_to_todo",
             ("in_progress", "todo"): "in_progress_to_todo",
+            ("failed", "in_progress"): "failed_to_in_progress",
+            ("failed", "todo"): "failed_to_todo",
         }
         rev_by_type: dict[str, int] = {v: 0 for v in _backwards.values()}
         tasks_with_rev: set[int] = set()
