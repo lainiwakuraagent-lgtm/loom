@@ -19,9 +19,10 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from loom.analytics import AnalyticsService
+from loom.context import generate_context_snapshot
 from loom.db import get_connection, init_db
 from loom.filters import ProjectFilter, SortSpec, TaskFilter
-from loom.service import ProjectService, TaskService
+from loom.service import GoalService, LoomSessionService, ProjectService, TaskService
 
 # ── startup ────────────────────────────────────────────────────────────────
 # Connection and services are created once at import time and reused for the
@@ -33,6 +34,8 @@ init_db(_conn)
 _ps = ProjectService(_conn)
 _ts = TaskService(_conn)
 _as = AnalyticsService(_conn)
+_gs = GoalService(_conn)
+_ss = LoomSessionService(_conn)
 
 app = Server("loom")
 
@@ -452,6 +455,118 @@ _TOOLS: list[Tool] = [
             },
         },
     ),
+    # ── loom: ready queue ─────────────────────────────────────────────────
+    Tool(
+        name="loom_ready_queue",
+        description="Return tasks ready to work on, ordered by urgency. All deps met, wait_until passed.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "goal_id": {"type": ["integer", "null"], "description": "Filter by goal ID"},
+                "limit":   {"type": "integer", "default": 10, "description": "Max tasks"},
+            },
+        },
+    ),
+    # ── loom: context snapshot ────────────────────────────────────────────
+    Tool(
+        name="loom_context_snapshot",
+        description="Generate a compact JSON context snapshot: current task, ready queue, counters.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "goal_id":     {"type": ["integer", "null"]},
+                "output_path": {"type": ["string", "null"], "description": "Write JSON to this path"},
+            },
+        },
+    ),
+    # ── loom: block task ─────────────────────────────────────────────────
+    Tool(
+        name="loom_block_task",
+        description="Mark a task as blocked (blocked_owner or blocked_dep) with a reason.",
+        inputSchema={
+            "type": "object",
+            "required": ["task_id", "reason"],
+            "properties": {
+                "task_id":        {"type": "integer"},
+                "reason":         {"type": "string", "enum": ["blocked_owner", "blocked_dep"]},
+                "blocked_note":   {"type": ["string", "null"]},
+            },
+        },
+    ),
+    # ── goal_list ─────────────────────────────────────────────────────────
+    Tool(
+        name="goal_list",
+        description="List all goals.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    # ── goal_create ───────────────────────────────────────────────────────
+    Tool(
+        name="goal_create",
+        description="Create a new goal.",
+        inputSchema={
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+                "name":               {"type": "string"},
+                "description":        {"type": ["string", "null"]},
+                "status":             {"type": "string", "default": "desire"},
+                "priority":           {"type": "integer", "default": 0},
+                "estimated_sessions": {"type": ["integer", "null"]},
+            },
+        },
+    ),
+    # ── goal_update ───────────────────────────────────────────────────────
+    Tool(
+        name="goal_update",
+        description="Update an existing goal.",
+        inputSchema={
+            "type": "object",
+            "required": ["goal_id"],
+            "properties": {
+                "goal_id":            {"type": "integer"},
+                "name":               {"type": ["string", "null"]},
+                "description":        {"type": ["string", "null"]},
+                "status":             {"type": ["string", "null"]},
+                "priority":           {"type": ["integer", "null"]},
+                "started_at":         {"type": ["string", "null"]},
+                "completed_at":       {"type": ["string", "null"]},
+                "estimated_sessions": {"type": ["integer", "null"]},
+                "actual_sessions":    {"type": ["integer", "null"]},
+            },
+        },
+    ),
+    # ── loom_session_start ────────────────────────────────────────────────
+    Tool(
+        name="loom_session_start",
+        description="Record the start of a LOOM agent session.",
+        inputSchema={
+            "type": "object",
+            "required": ["date", "session_number"],
+            "properties": {
+                "date":           {"type": "string", "description": "YYYY-MM-DD"},
+                "session_number": {"type": "integer"},
+                "session_type":   {"type": ["string", "null"]},
+                "active_goal_id": {"type": ["integer", "null"]},
+            },
+        },
+    ),
+    # ── loom_session_end ──────────────────────────────────────────────────
+    Tool(
+        name="loom_session_end",
+        description="Record the end of a LOOM agent session.",
+        inputSchema={
+            "type": "object",
+            "required": ["session_id", "exit_reason"],
+            "properties": {
+                "session_id":          {"type": "integer"},
+                "exit_reason":         {"type": "string"},
+                "context_pct_at_exit": {"type": ["number", "null"]},
+                "handoff_note":        {"type": ["string", "null"]},
+                "tasks_started":       {"type": ["array", "null"], "items": {"type": "integer"}},
+                "tasks_completed":     {"type": ["array", "null"], "items": {"type": "integer"}},
+            },
+        },
+    ),
 ]
 
 # ── handlers ───────────────────────────────────────────────────────────────
@@ -615,6 +730,86 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
             since=args.get("since"),
             tag=args.get("tag"),
         ))
+
+    # ── loom_ready_queue ──────────────────────────────────────────────────
+    if name == "loom_ready_queue":
+        tasks = _ts.get_ready_queue(
+            goal_id=args.get("goal_id"),
+            limit=int(args.get("limit", 10)),
+        )
+        return _ok([t.to_dict() for t in tasks])
+
+    # ── loom_context_snapshot ─────────────────────────────────────────────
+    if name == "loom_context_snapshot":
+        snap = generate_context_snapshot(
+            _conn,
+            goal_id=args.get("goal_id"),
+            output_path=args.get("output_path"),
+        )
+        return _ok(snap)
+
+    # ── loom_block_task ───────────────────────────────────────────────────
+    if name == "loom_block_task":
+        result = _ts.update(
+            args["task_id"],
+            status=args["reason"],
+            blocked_note=args.get("blocked_note"),
+        )
+        return _ok(result.to_dict())
+
+    # ── goal_list ─────────────────────────────────────────────────────────
+    if name == "goal_list":
+        goals = _gs.list_all()
+        return _ok([g.to_dict() for g in goals])
+
+    # ── goal_create ───────────────────────────────────────────────────────
+    if name == "goal_create":
+        result = _gs.create(
+            name=args["name"],
+            description=args.get("description"),
+            status=args.get("status", "desire"),
+            priority=int(args.get("priority", 0)),
+            estimated_sessions=args.get("estimated_sessions"),
+        )
+        return _ok(result.to_dict())
+
+    # ── goal_update ───────────────────────────────────────────────────────
+    if name == "goal_update":
+        from loom.service import _MISSING
+        result = _gs.update(
+            goal_id=args["goal_id"],
+            name=args.get("name"),
+            description=args.get("description", _MISSING),
+            status=args.get("status"),
+            priority=args.get("priority"),
+            started_at=args.get("started_at", _MISSING),
+            completed_at=args.get("completed_at", _MISSING),
+            estimated_sessions=args.get("estimated_sessions", _MISSING),
+            actual_sessions=args.get("actual_sessions"),
+        )
+        return _ok(result.to_dict())
+
+    # ── loom_session_start ────────────────────────────────────────────────
+    if name == "loom_session_start":
+        result = _ss.start_session(
+            date=args["date"],
+            session_number=int(args["session_number"]),
+            session_type=args.get("session_type"),
+            active_goal_id=args.get("active_goal_id"),
+        )
+        return _ok({"id": result.id, "started_at": result.started_at})
+
+    # ── loom_session_end ──────────────────────────────────────────────────
+    if name == "loom_session_end":
+        result = _ss.end_session(
+            session_id=int(args["session_id"]),
+            exit_reason=args["exit_reason"],
+            context_pct_at_exit=args.get("context_pct_at_exit"),
+            handoff_note=args.get("handoff_note"),
+            tasks_started=args.get("tasks_started"),
+            tasks_completed=args.get("tasks_completed"),
+        )
+        return _ok({"id": result.id, "duration_minutes": result.duration_minutes})
 
     raise ValueError(f"Unknown tool: {name!r}")
 
