@@ -1,17 +1,17 @@
 """Tests for jar.models — dataclasses, enums, helpers."""
 
 import pytest
-from jar.models import Project, Status, TagEnum, Task, SUGGESTED_TAGS
+from loom.models import Project, Status, TagEnum, Task, SUGGESTED_TAGS
 
 
 class TestStatus:
     def test_values(self):
-        assert Status.TODO.value == "todo"
+        assert Status.TRIAGE.value == "triage"
         assert Status.IN_PROGRESS.value == "in_progress"
         assert Status.DONE.value == "done"
 
     def test_from_string(self):
-        assert Status("todo") is Status.TODO
+        assert Status("triage") is Status.TRIAGE
         assert Status("in_progress") is Status.IN_PROGRESS
         assert Status("done") is Status.DONE
 
@@ -37,7 +37,7 @@ class TestTagEnum:
 class TestTask:
     def test_defaults(self):
         t = Task(name="Do something")
-        assert t.status == Status.TODO
+        assert t.status == Status.TRIAGE
         assert t.tags == []
         assert t.id is None
         assert t.project_id is None
@@ -67,8 +67,12 @@ class TestTask:
     def test_to_dict_contains_all_keys(self):
         t = Task(name="x", tags=["bug"], status=Status.IN_PROGRESS)
         d = t.to_dict()
-        assert set(d.keys()) == {"id", "name", "description", "tags", "deadline",
-                                  "project_id", "status", "created_at", "updated_at"}
+        assert set(d.keys()) == {
+            "id", "name", "description", "tags", "deadline", "project_id",
+            "goal_id", "priority", "wait_until", "depends", "blocked_reason",
+            "blocked_note", "urgency_score", "context_tag", "estimated_sessions",
+            "actual_sessions", "handoff_note", "status", "created_at", "updated_at",
+        }
 
     def test_to_dict_status_is_string(self):
         t = Task(name="x", status=Status.DONE)
@@ -91,4 +95,5 @@ class TestProject:
         p = Project(name="x")
         d = p.to_dict()
         assert set(d.keys()) == {"id", "name", "description", "start_date",
-                                  "deployment_date", "created_at", "updated_at"}
+                                  "deployment_date", "goal_id", "status",
+                                  "created_at", "updated_at"}

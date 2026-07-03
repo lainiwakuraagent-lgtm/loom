@@ -1,11 +1,11 @@
 """Tests for jar.repository — CRUD and cascade-delete using in-memory SQLite."""
 
 import pytest
-from jar.db import get_connection, init_db
-from jar.filters import ProjectFilter, SortSpec, TaskFilter
-from jar.models import Project, Status, Task
-from jar.models import EventType, TaskEvent
-from jar.repository import ProjectRepository, TaskEventRepository, TaskRepository
+from loom.db import get_connection, init_db
+from loom.filters import ProjectFilter, SortSpec, TaskFilter
+from loom.models import Project, Status, Task
+from loom.models import EventType, TaskEvent
+from loom.repository import ProjectRepository, TaskEventRepository, TaskRepository
 
 
 @pytest.fixture
@@ -38,7 +38,7 @@ def sample_project(project_repo):
 
 @pytest.fixture
 def sample_task(task_repo, sample_project):
-    return task_repo.insert(Task(name="Fix bug", tags=["bug"], status=Status.TODO,
+    return task_repo.insert(Task(name="Fix bug", tags=["bug"], status=Status.TRIAGE,
                                   project_id=sample_project.id))
 
 
@@ -155,7 +155,7 @@ class TestTaskRepositoryInsert:
 
     def test_default_status_is_todo(self, task_repo):
         t = task_repo.insert(Task(name="Do it"))
-        assert task_repo.get_by_id(t.id).status == Status.TODO
+        assert task_repo.get_by_id(t.id).status == Status.TRIAGE
 
     def test_tags_roundtrip(self, task_repo):
         t = task_repo.insert(Task(name="T", tags=["bug", "docs"]))
@@ -201,7 +201,7 @@ class TestTaskRepositoryDelete:
 
 class TestTaskRepositoryFilter:
     def _seed(self, task_repo, project_id):
-        task_repo.insert(Task(name="A", status=Status.TODO, tags=["bug"],
+        task_repo.insert(Task(name="A", status=Status.TRIAGE, tags=["bug"],
                                deadline="2025-03-01", project_id=project_id))
         task_repo.insert(Task(name="B", status=Status.IN_PROGRESS, tags=["docs"],
                                deadline="2025-06-01", project_id=project_id))
@@ -209,8 +209,8 @@ class TestTaskRepositoryFilter:
 
     def test_filter_by_status(self, task_repo, sample_project):
         self._seed(task_repo, sample_project.id)
-        results = task_repo.list_filtered(TaskFilter(status="todo"))
-        assert all(t.status == Status.TODO for t in results)
+        results = task_repo.list_filtered(TaskFilter(status="triage"))
+        assert all(t.status == Status.TRIAGE for t in results)
 
     def test_filter_by_project(self, task_repo, sample_project):
         self._seed(task_repo, sample_project.id)
@@ -254,10 +254,10 @@ class TestTaskRepositoryFilter:
 
     def test_filter_overdue(self, task_repo):
         # Insert a past-due non-done task and a done task with past deadline
-        task_repo.insert(Task(name="Past todo", status=Status.TODO, deadline="2020-01-01"))
+        task_repo.insert(Task(name="Past todo", status=Status.TRIAGE, deadline="2020-01-01"))
         task_repo.insert(Task(name="Past done", status=Status.DONE, deadline="2020-01-01"))
-        task_repo.insert(Task(name="Future todo", status=Status.TODO, deadline="2099-01-01"))
-        task_repo.insert(Task(name="No deadline", status=Status.TODO))
+        task_repo.insert(Task(name="Future todo", status=Status.TRIAGE, deadline="2099-01-01"))
+        task_repo.insert(Task(name="No deadline", status=Status.TRIAGE))
 
         results = task_repo.list_filtered(TaskFilter(overdue=True))
         names = {t.name for t in results}

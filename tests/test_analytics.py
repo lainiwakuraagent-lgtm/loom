@@ -1,9 +1,9 @@
 """Tests for jar.analytics — AnalyticsService metric computation."""
 
 import pytest
-from jar.db import get_connection, init_db
-from jar.service import ProjectService, TaskService
-from jar.analytics import AnalyticsService
+from loom.db import get_connection, init_db
+from loom.service import ProjectService, TaskService
+from loom.analytics import AnalyticsService
 
 
 @pytest.fixture
@@ -56,13 +56,13 @@ class TestDeadlineHealth:
         assert pushes["push_count"] == 0
 
     def test_miss_rate_zero_when_all_on_time(self, ts, svc):
-        t = ts.create("On time", deadline="2099-12-31", status="todo")
+        t = ts.create("On time", deadline="2099-12-31", status="triage")
         ts.update(t.id, status="done")
         data = svc.deadline_health()
         assert data["miss_rate"]["overall_miss_rate"] == 0.0
 
     def test_miss_rate_one_when_late(self, ts, svc):
-        t = ts.create("Late", deadline="2020-01-01", status="todo")
+        t = ts.create("Late", deadline="2020-01-01", status="triage")
         ts.update(t.id, status="done")
         data = svc.deadline_health()
         assert data["miss_rate"]["overall_miss_rate"] == 1.0
@@ -87,7 +87,7 @@ class TestVelocity:
         assert data["time_to_done"].get("insufficient_data") is True
 
     def test_time_to_done_single_task(self, ts, svc):
-        t = ts.create("Quick", status="todo")
+        t = ts.create("Quick", status="triage")
         ts.update(t.id, status="done")
         data = svc.velocity()
         ttd = data["time_to_done"]
@@ -139,7 +139,7 @@ class TestBehavior:
 
     def test_recovery_lag_calculation(self, ts, svc):
         # Task with a past deadline that gets done after deadline
-        t = ts.create("Late task", deadline="2020-06-01", status="todo")
+        t = ts.create("Late task", deadline="2020-06-01", status="triage")
         ts.update(t.id, status="done")
         data = svc.behavior()
         lag = data["recovery_lag"]

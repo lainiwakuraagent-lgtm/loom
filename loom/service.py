@@ -254,6 +254,17 @@ class TaskService:
             _slog_error("TaskService.list_filtered", exc)
             raise
 
+    def get_ready_queue(self, goal_id: Optional[int] = None, limit: int = 10) -> list[Task]:
+        """Return top tasks ready to work on, ordered by urgency. Deps met, wait_until passed."""
+        _slog("TaskService.get_ready_queue", f"goal_id={goal_id} limit={limit}")
+        try:
+            result = self._repo.get_ready_queue(goal_id=goal_id, limit=limit)
+            _slog_result("TaskService.get_ready_queue", f"count={len(result)}")
+            return result
+        except Exception as exc:
+            _slog_error("TaskService.get_ready_queue", exc)
+            raise
+
     # ------------------------------------------------------------------ write
 
     def create(

@@ -50,6 +50,36 @@ class TaskRepository:
         rows = self._conn.execute(sql, params).fetchall()
         return [_row_to_task(r) for r in rows]
 
+    def get_ready_queue(self, goal_id: Optional[int] = None, limit: int = 10) -> list[Task]:
+        """Return tasks ordered by urgency_score where all deps are met and wait_until passed."""
+        where = ["t.status IN ('scheduled', 'in_progress')"]
+        params: list = []
+
+        if goal_id is not None:
+            where.append("t.goal_id = ?")
+            params.append(goal_id)
+
+        where.append(
+            "(t.depends IS NULL OR NOT EXISTS ("
+            "SELECT 1 FROM tasks d "
+            "WHERE d.id IN (SELECT value FROM json_each(t.depends)) "
+            "AND d.status NOT IN ('done')"
+            "))"
+        )
+        where.append("(t.wait_until IS NULL OR t.wait_until <= date('now'))")
+
+        sql = (
+            f"SELECT t.* FROM tasks t "
+            f"WHERE {' AND '.join(where)} "
+            f"ORDER BY t.urgency_score DESC "
+            f"LIMIT ?"
+        )
+        params.append(limit)
+
+        _log("SELECT", "tasks", f"ready_queue goal_id={goal_id} limit={limit}")
+        rows = self._conn.execute(sql, params).fetchall()
+        return [_row_to_task(r) for r in rows]
+
     # ------------------------------------------------------------------ write
 
     def insert(self, task: Task) -> Task:

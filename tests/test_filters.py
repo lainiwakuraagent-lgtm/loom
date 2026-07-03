@@ -1,7 +1,7 @@
 """Tests for jar.filters — SortSpec, TaskFilter, ProjectFilter, SQL builders."""
 
 import pytest
-from jar.filters import (
+from loom.filters import (
     ProjectFilter,
     SortSpec,
     TaskFilter,

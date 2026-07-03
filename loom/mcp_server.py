@@ -18,10 +18,10 @@ import click
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from jar.analytics import AnalyticsService
-from jar.db import get_connection, init_db
-from jar.filters import ProjectFilter, SortSpec, TaskFilter
-from jar.service import ProjectService, TaskService
+from loom.analytics import AnalyticsService
+from loom.db import get_connection, init_db
+from loom.filters import ProjectFilter, SortSpec, TaskFilter
+from loom.service import ProjectService, TaskService
 
 # ── startup ────────────────────────────────────────────────────────────────
 # Connection and services are created once at import time and reused for the
@@ -34,7 +34,7 @@ _ps = ProjectService(_conn)
 _ts = TaskService(_conn)
 _as = AnalyticsService(_conn)
 
-app = Server("jar")
+app = Server("loom")
 
 # ── helpers ────────────────────────────────────────────────────────────────
 

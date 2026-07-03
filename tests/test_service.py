@@ -1,11 +1,11 @@
 """Tests for jar.service — ProjectService and TaskService business logic."""
 
 import pytest
-from jar.db import get_connection, init_db
-from jar.filters import ProjectFilter, SortSpec, TaskFilter
+from loom.db import get_connection, init_db
+from loom.filters import ProjectFilter, SortSpec, TaskFilter
 import json
-from jar.models import EventType, Status
-from jar.service import ProjectService, TaskService
+from loom.models import EventType, Status
+from loom.service import ProjectService, TaskService
 
 
 @pytest.fixture
@@ -156,7 +156,7 @@ class TestTaskServiceCreate:
         t = ts.create("Solo task")
         assert t.id is not None
         assert t.project_id is None
-        assert t.status == Status.TODO
+        assert t.status == Status.TRIAGE
 
     def test_creates_with_project(self, ts, project):
         t = ts.create("With project", project_id=project.id)
@@ -171,7 +171,7 @@ class TestTaskServiceCreate:
             ts.create("Bad status task", status="flying")
 
     def test_all_statuses_accepted(self, ts):
-        for status in ("todo", "in_progress", "done"):
+        for status in ("triage", "in_progress", "done"):
             t = ts.create(f"Task {status}", status=status)
             assert t.status == Status(status)
 
@@ -249,7 +249,7 @@ class TestTaskServiceDelete:
 
 class TestTaskServiceListFiltered:
     def _seed(self, ts, project_id):
-        ts.create("A", status="todo", tags=["bug"], deadline="2025-03-01",
+        ts.create("A", status="triage", tags=["bug"], deadline="2025-03-01",
                    project_id=project_id)
         ts.create("B", status="in_progress", tags=["docs"], project_id=project_id)
         ts.create("C", status="done", tags=["chore"])
@@ -260,7 +260,7 @@ class TestTaskServiceListFiltered:
 
     def test_filter_status(self, ts, project):
         self._seed(ts, project.id)
-        results = ts.list_filtered(TaskFilter(status="todo"))
+        results = ts.list_filtered(TaskFilter(status="triage"))
         assert len(results) == 1 and results[0].name == "A"
 
     def test_filter_tag(self, ts, project):
@@ -289,10 +289,10 @@ class TestTaskServiceListFiltered:
         assert results[0].name == "A"
 
     def test_filter_overdue(self, ts):
-        ts.create("Overdue task", status="todo", deadline="2020-01-01")
+        ts.create("Overdue task", status="triage", deadline="2020-01-01")
         ts.create("Done old",     status="done", deadline="2020-01-01")
-        ts.create("Future task",  status="todo", deadline="2099-01-01")
-        ts.create("No deadline",  status="todo")
+        ts.create("Future task",  status="triage", deadline="2099-01-01")
+        ts.create("No deadline",  status="triage")
 
         results = ts.list_filtered(TaskFilter(overdue=True))
         names = {t.name for t in results}
@@ -334,7 +334,7 @@ class TestTaskServiceHistory:
         updated = [e for e in events if e.event_type == EventType.UPDATED]
         assert len(updated) == 1
         assert updated[0].field_name == "status"
-        assert updated[0].old_value == "todo"
+        assert updated[0].old_value == "triage"
         assert updated[0].new_value == "done"
 
     def test_update_multiple_fields_emits_multiple_events(self, ts):
@@ -347,9 +347,9 @@ class TestTaskServiceHistory:
         assert "status" in fields
 
     def test_update_no_change_emits_no_events(self, ts):
-        t = ts.create(name="Stable", status="todo")
+        t = ts.create(name="Stable", status="triage")
         # Pass same values — no actual change
-        ts.update(t.id, name="Stable", status="todo")
+        ts.update(t.id, name="Stable", status="triage")
         events = ts.get_history(t.id)
         # Only the initial CREATED event, no UPDATED events
         assert len(events) == 1

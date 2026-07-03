@@ -17,9 +17,9 @@ _DEFAULT_DB_PATH: Optional[Path] = None
 def _default_db_path() -> Path:
     global _DEFAULT_DB_PATH
     if _DEFAULT_DB_PATH is None:
-        data_dir = Path(platformdirs.user_data_dir("jar", appauthor=False))
+        data_dir = Path(platformdirs.user_data_dir("loom", appauthor=False))
         data_dir.mkdir(parents=True, exist_ok=True)
-        _DEFAULT_DB_PATH = data_dir / "jar.db"
+        _DEFAULT_DB_PATH = data_dir / "loom.db"
     return _DEFAULT_DB_PATH
 
 

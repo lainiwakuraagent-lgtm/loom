@@ -26,7 +26,7 @@ _service_logger: logging.Logger | None = None
 
 
 def _log_base_dir() -> Path:
-    return Path(platformdirs.user_data_dir("jar", appauthor=False)) / "logs"
+    return Path(platformdirs.user_data_dir("loom", appauthor=False)) / "logs"
 
 
 def _make_rotating_handler(log_file: Path) -> logging.handlers.RotatingFileHandler:
@@ -47,7 +47,7 @@ def get_db_logger() -> logging.Logger:
     if _db_logger is not None:
         return _db_logger
 
-    logger = logging.getLogger("jar.db")
+    logger = logging.getLogger("loom.db")
     if not logger.handlers:
         log_file = _log_base_dir() / "db" / "db.log"
         logger.addHandler(_make_rotating_handler(log_file))
@@ -64,7 +64,7 @@ def get_service_logger() -> logging.Logger:
     if _service_logger is not None:
         return _service_logger
 
-    logger = logging.getLogger("jar.service")
+    logger = logging.getLogger("loom.service")
     if not logger.handlers:
         log_file = _log_base_dir() / "service" / "service.log"
         logger.addHandler(_make_rotating_handler(log_file))

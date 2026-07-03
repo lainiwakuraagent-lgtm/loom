@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "project-jar"
+name = "project-loom"
 version = "0.1.0"
 description = "Project and task management system with flexible filtering and multiple output formats"
 requires-python = ">=3.10"
@@ -16,12 +16,12 @@ dependencies = [
 ]
 
 [project.scripts]
-jar = "jar.cli.main:cli"
-jar-mcp = "jar.mcp_server:main"
+loom = "loom.cli.main:cli"
+loom-mcp = "loom.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["jar*"]
+include = ["loom*"]
 
 [project.optional-dependencies]
 dev = [
