@@ -9,7 +9,7 @@ from typing import Optional
 import platformdirs
 
 # Current schema version — bump when adding migrations.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _DEFAULT_DB_PATH: Optional[Path] = None
 
@@ -69,19 +69,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     tags        TEXT,
     deadline    TEXT,
     project_id  INTEGER REFERENCES projects(id) ON DELETE CASCADE,
-    status      TEXT    NOT NULL DEFAULT 'todo',
+    status      TEXT    NOT NULL DEFAULT 'triage',
     created_at  TEXT    NOT NULL,
     updated_at  TEXT    NOT NULL
 );
-"""
-
-_DDL_TASK_STATUS_CHECK = """
-CREATE TRIGGER IF NOT EXISTS tasks_status_check
-BEFORE INSERT ON tasks
-BEGIN
-    SELECT RAISE(ABORT, 'Invalid status value')
-    WHERE NEW.status NOT IN ('todo', 'in_progress', 'done', 'failed');
-END;
 """
 
 _DDL_TASK_EVENTS = """
@@ -105,14 +96,88 @@ _DDL_TASK_EVENTS_IDX_TIME = """
 CREATE INDEX IF NOT EXISTS idx_task_events_changed_at ON task_events(changed_at);
 """
 
-_DDL_TASK_STATUS_CHECK_UPDATE = """
+# v4 new tables
+
+_DDL_GOALS = """
+CREATE TABLE IF NOT EXISTS goals (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                TEXT    NOT NULL,
+    description         TEXT,
+    status              TEXT    NOT NULL DEFAULT 'desire',
+    priority            INTEGER DEFAULT 0,
+    started_at          TEXT,
+    completed_at        TEXT,
+    estimated_sessions  INTEGER,
+    actual_sessions     INTEGER DEFAULT 0,
+    created_at          TEXT    NOT NULL,
+    updated_at          TEXT    NOT NULL
+);
+"""
+
+_DDL_SESSIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS loom_sessions (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    date                TEXT    NOT NULL,
+    session_number      INTEGER NOT NULL,
+    type                TEXT,
+    active_goal_id      INTEGER REFERENCES goals(id),
+    started_at          TEXT,
+    ended_at            TEXT,
+    duration_minutes    INTEGER,
+    context_pct_at_exit REAL,
+    exit_reason         TEXT,
+    handoff_note        TEXT,
+    tasks_started       TEXT,
+    tasks_completed     TEXT
+);
+"""
+
+# v4 status trigger (9 statuses)
+
+_VALID_STATUS_LITERAL = "('triage','desire','scheduled','in_progress','blocked_dep','blocked_owner','suspended','done','failed')"
+
+_DDL_TASK_STATUS_CHECK_V4 = f"""
+CREATE TRIGGER IF NOT EXISTS tasks_status_check
+BEFORE INSERT ON tasks
+BEGIN
+    SELECT RAISE(ABORT, 'Invalid status value')
+    WHERE NEW.status NOT IN {_VALID_STATUS_LITERAL};
+END;
+"""
+
+_DDL_TASK_STATUS_CHECK_UPDATE_V4 = f"""
 CREATE TRIGGER IF NOT EXISTS tasks_status_check_update
 BEFORE UPDATE OF status ON tasks
 BEGIN
     SELECT RAISE(ABORT, 'Invalid status value')
-    WHERE NEW.status NOT IN ('todo', 'in_progress', 'done', 'failed');
+    WHERE NEW.status NOT IN {_VALID_STATUS_LITERAL};
 END;
 """
+
+# v3 triggers (kept for reference, used during fresh init path before v4 migration runs)
+_DDL_TASK_STATUS_CHECK = _DDL_TASK_STATUS_CHECK_V4
+_DDL_TASK_STATUS_CHECK_UPDATE = _DDL_TASK_STATUS_CHECK_UPDATE_V4
+
+# v4 ALTER TABLE migrations
+
+_MIGRATION_V4_TASKS = [
+    "ALTER TABLE tasks ADD COLUMN goal_id INTEGER REFERENCES goals(id)",
+    "ALTER TABLE tasks ADD COLUMN priority TEXT DEFAULT 'none'",
+    "ALTER TABLE tasks ADD COLUMN wait_until TEXT",
+    "ALTER TABLE tasks ADD COLUMN depends TEXT",
+    "ALTER TABLE tasks ADD COLUMN blocked_reason TEXT",
+    "ALTER TABLE tasks ADD COLUMN blocked_note TEXT",
+    "ALTER TABLE tasks ADD COLUMN urgency_score REAL DEFAULT 0",
+    "ALTER TABLE tasks ADD COLUMN context_tag TEXT",
+    "ALTER TABLE tasks ADD COLUMN estimated_sessions INTEGER",
+    "ALTER TABLE tasks ADD COLUMN actual_sessions INTEGER DEFAULT 0",
+    "ALTER TABLE tasks ADD COLUMN handoff_note TEXT",
+]
+
+_MIGRATION_V4_PROJECTS = [
+    "ALTER TABLE projects ADD COLUMN goal_id INTEGER REFERENCES goals(id)",
+    "ALTER TABLE projects ADD COLUMN status TEXT DEFAULT 'planned'",
+]
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -150,3 +215,15 @@ def _run_migrations(conn: sqlite3.Connection, from_version: int) -> None:
         conn.execute("DROP TRIGGER IF EXISTS tasks_status_check_update")
         conn.execute(_DDL_TASK_STATUS_CHECK)
         conn.execute(_DDL_TASK_STATUS_CHECK_UPDATE)
+    if from_version < 4:
+        conn.execute(_DDL_GOALS)
+        conn.execute(_DDL_SESSIONS_TABLE)
+        for sql in _MIGRATION_V4_TASKS:
+            conn.execute(sql)
+        for sql in _MIGRATION_V4_PROJECTS:
+            conn.execute(sql)
+        # Replace old 4-status triggers with new 9-status triggers
+        conn.execute("DROP TRIGGER IF EXISTS tasks_status_check")
+        conn.execute("DROP TRIGGER IF EXISTS tasks_status_check_update")
+        conn.execute(_DDL_TASK_STATUS_CHECK_V4)
+        conn.execute(_DDL_TASK_STATUS_CHECK_UPDATE_V4)
