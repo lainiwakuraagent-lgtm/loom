@@ -77,10 +77,12 @@ def cli(ctx: click.Context, db: Optional[str], fmt: str) -> None:
 from .project_cmds import project        # noqa: E402 — imported after cli is defined
 from .task_cmds import task              # noqa: E402
 from .analytics_cmds import analytics   # noqa: E402
+from .goal_cmds import goal             # noqa: E402
 
 cli.add_command(project)
 cli.add_command(task)
 cli.add_command(analytics)
+cli.add_command(goal)
 
 
 # ------------------------------------------------------------------ loom commands
