@@ -9,7 +9,7 @@ from typing import Optional
 import platformdirs
 
 # Current schema version — bump when adding migrations.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
 
 _DEFAULT_DB_PATH: Optional[Path] = None
 
@@ -134,7 +134,7 @@ CREATE TABLE IF NOT EXISTS loom_sessions (
 
 # v4 status trigger (9 statuses)
 
-_VALID_STATUS_LITERAL = "('triage','desire','scheduled','in_progress','blocked_dep','blocked_owner','suspended','done','failed')"
+_VALID_STATUS_LITERAL = "('triage','desire','needs_plan','scheduled','in_progress','blocked_dep','blocked_owner','blocked_external','suspended','done','failed')"
 
 _DDL_TASK_STATUS_CHECK_V4 = f"""
 CREATE TRIGGER IF NOT EXISTS tasks_status_check
@@ -178,6 +178,48 @@ _MIGRATION_V4_PROJECTS = [
     "ALTER TABLE projects ADD COLUMN goal_id INTEGER REFERENCES goals(id)",
     "ALTER TABLE projects ADD COLUMN status TEXT DEFAULT 'planned'",
 ]
+
+# v5 migrations
+
+_MIGRATION_V5_PROJECTS = [
+    "ALTER TABLE projects ADD COLUMN priority INTEGER DEFAULT 0",
+    "ALTER TABLE projects ADD COLUMN blocked_reason TEXT",
+    "ALTER TABLE projects ADD COLUMN blocked_note TEXT",
+    "ALTER TABLE projects ADD COLUMN handoff_note TEXT",
+]
+
+_MIGRATION_V5_GOALS = [
+    "ALTER TABLE goals ADD COLUMN blocked_reason TEXT",
+    "ALTER TABLE goals ADD COLUMN blocked_note TEXT",
+    "ALTER TABLE goals ADD COLUMN handoff_note TEXT",
+]
+
+# v6 migrations
+
+_MIGRATION_V6_TASKS = [
+    "ALTER TABLE tasks ADD COLUMN files TEXT DEFAULT NULL",
+]
+
+# v5 project status trigger
+_VALID_PROJECT_STATUS_LITERAL = "('triage','desire','needs_plan','scheduled','in_progress','blocked_owner','blocked_external','suspended','done','failed')"
+
+_DDL_PROJECT_STATUS_CHECK_V5 = f"""
+CREATE TRIGGER IF NOT EXISTS projects_status_check
+BEFORE INSERT ON projects
+BEGIN
+    SELECT RAISE(ABORT, 'Invalid project status value')
+    WHERE NEW.status NOT IN {_VALID_PROJECT_STATUS_LITERAL};
+END;
+"""
+
+_DDL_PROJECT_STATUS_CHECK_UPDATE_V5 = f"""
+CREATE TRIGGER IF NOT EXISTS projects_status_check_update
+BEFORE UPDATE OF status ON projects
+BEGIN
+    SELECT RAISE(ABORT, 'Invalid project status value')
+    WHERE NEW.status NOT IN {_VALID_PROJECT_STATUS_LITERAL};
+END;
+"""
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -227,3 +269,28 @@ def _run_migrations(conn: sqlite3.Connection, from_version: int) -> None:
         conn.execute("DROP TRIGGER IF EXISTS tasks_status_check_update")
         conn.execute(_DDL_TASK_STATUS_CHECK_V4)
         conn.execute(_DDL_TASK_STATUS_CHECK_UPDATE_V4)
+    if from_version < 5:
+        # --- v5: Project and Goal new columns ---
+        for sql in _MIGRATION_V5_PROJECTS:
+            conn.execute(sql)
+        for sql in _MIGRATION_V5_GOALS:
+            conn.execute(sql)
+        # --- v5: Data remap for Project status (before adding CHECK triggers) ---
+        conn.execute("UPDATE projects SET status='scheduled'   WHERE status='planned'")
+        conn.execute("UPDATE projects SET status='in_progress' WHERE status='active'")
+        conn.execute("UPDATE projects SET status='done'        WHERE status='completed'")
+        # --- v5: Data remap for Goal status ---
+        conn.execute("UPDATE goals SET status='scheduled'     WHERE status='active'")
+        conn.execute("UPDATE goals SET status='done'          WHERE status='completed'")
+        conn.execute("UPDATE goals SET status='blocked_owner' WHERE status='blocked'")
+        # --- v5: Replace task status triggers (adds needs_plan, blocked_external) ---
+        conn.execute("DROP TRIGGER IF EXISTS tasks_status_check")
+        conn.execute("DROP TRIGGER IF EXISTS tasks_status_check_update")
+        conn.execute(_DDL_TASK_STATUS_CHECK_V4)
+        conn.execute(_DDL_TASK_STATUS_CHECK_UPDATE_V4)
+        # --- v5: Add Project status CHECK triggers ---
+        conn.execute(_DDL_PROJECT_STATUS_CHECK_V5)
+        conn.execute(_DDL_PROJECT_STATUS_CHECK_UPDATE_V5)
+    if from_version < 6:
+        for sql in _MIGRATION_V6_TASKS:
+            conn.execute(sql)
