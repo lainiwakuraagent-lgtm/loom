@@ -14,7 +14,7 @@ from typing import Optional
 
 from .filters import ProjectFilter, SortSpec, TaskFilter
 from .logging_config import get_service_logger
-from .models import EventType, Goal, GoalStatus, LoomSession, Project, Status, Task, TaskEvent
+from .models import EventType, Goal, GoalStatus, LoomSession, Project, ProjectStatus, Status, Task, TaskEvent
 from .repository import (
     GoalRepository,
     LoomSessionRepository,
@@ -32,6 +32,7 @@ _TRACKED_FIELDS = ("name", "description", "tags", "deadline", "status", "project
 # ------------------------------------------------------------------ helpers
 
 _VALID_STATUSES = {s.value for s in Status}
+_VALID_PROJECT_STATUSES = {s.value for s in ProjectStatus}
 _VALID_GOAL_STATUSES = {s.value for s in GoalStatus}
 
 PRIORITY_VALUE = {"H": 3, "M": 2, "L": 1, "none": 0}
@@ -66,10 +67,21 @@ def _slog_error(method: str, exc: Exception) -> None:
     get_service_logger().error("%s | ERROR: %s", method, exc, exc_info=True)
 
 
+def _slog_warn(method: str, detail: str) -> None:
+    get_service_logger().warning("%s | %s", method, detail)
+
+
 def _validate_status(status: str) -> None:
     if status not in _VALID_STATUSES:
         raise ValueError(
             f"Invalid status {status!r}. Must be one of: {sorted(_VALID_STATUSES)}"
+        )
+
+
+def _validate_project_status(status: str) -> None:
+    if status not in _VALID_PROJECT_STATUSES:
+        raise ValueError(
+            f"Invalid project status {status!r}. Must be one of: {sorted(_VALID_PROJECT_STATUSES)}"
         )
 
 
@@ -92,6 +104,8 @@ def _compute_urgency(task: Task) -> float:
     if task.created_at:
         try:
             created = datetime.fromisoformat(task.created_at.replace("Z", "+00:00"))
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
             age_days = (datetime.now(timezone.utc) - created).days
             score += age_days * 0.003
         except ValueError:
@@ -142,17 +156,20 @@ class ProjectService:
         start_date: Optional[str] = None,
         deployment_date: Optional[str] = None,
         goal_id: Optional[int] = None,
-        status: str = "planned",
+        status: str = ProjectStatus.SCHEDULED.value,
+        priority: int = 0,
     ) -> Project:
         _slog("ProjectService.create", f"name={name!r}")
         try:
+            _validate_project_status(status)
             project = Project(
                 name=name,
                 description=description,
                 start_date=start_date,
                 deployment_date=deployment_date,
                 goal_id=goal_id,
-                status=status,
+                status=ProjectStatus(status),
+                priority=priority,
             )
             result = self._repo.insert(project)
             _slog_result("ProjectService.create", f"id={result.id}")
@@ -170,6 +187,10 @@ class ProjectService:
         deployment_date: Optional[str] = _MISSING,
         goal_id: Optional[int] = _MISSING,
         status: Optional[str] = None,
+        priority: Optional[int] = None,
+        blocked_reason: Optional[str] = _MISSING,
+        blocked_note: Optional[str] = _MISSING,
+        handoff_note: Optional[str] = _MISSING,
     ) -> Project:
         _slog("ProjectService.update", f"id={project_id}")
         try:
@@ -188,7 +209,19 @@ class ProjectService:
             if goal_id is not _MISSING:
                 project.goal_id = goal_id
             if status is not None:
-                project.status = status
+                _validate_project_status(status)
+                project.status = ProjectStatus(status)
+            if priority is not None:
+                project.priority = priority
+            if blocked_reason is not _MISSING:
+                project.blocked_reason = blocked_reason
+            if blocked_note is not _MISSING:
+                project.blocked_note = blocked_note
+            if handoff_note is not _MISSING:
+                project.handoff_note = handoff_note
+
+            if project.status == ProjectStatus.DONE:
+                self._warn_if_no_milestone_review(project_id)
 
             result = self._repo.update(project)
             _slog_result("ProjectService.update", f"id={result.id}")
@@ -217,6 +250,32 @@ class ProjectService:
         except Exception as exc:
             _slog_error("ProjectService.tasks_for_project", exc)
             raise
+
+    def resolve_active(self, goal_id: int) -> Optional[Project]:
+        """Highest-priority project under goal_id currently eligible (scheduled/in_progress)."""
+        _slog("ProjectService.resolve_active", f"goal_id={goal_id}")
+        try:
+            result = self._repo.resolve_active(goal_id)
+            _slog_result("ProjectService.resolve_active", f"id={result.id if result else None}")
+            return result
+        except Exception as exc:
+            _slog_error("ProjectService.resolve_active", exc)
+            raise
+
+    def _warn_if_no_milestone_review(self, project_id: int) -> None:
+        """Lightweight guard, not a block: a project marked done is trusting the
+        convention that some task under it was verified via a milestone_review
+        tag. Log a warning if that convention wasn't actually followed, rather
+        than silently trusting an unenforced convention — no new audit session
+        type, just a flag at the point the status write actually happens.
+        """
+        tasks = self._repo.tasks_for_project(project_id)
+        if not any("milestone_review" in t.tags for t in tasks):
+            _slog_warn(
+                "ProjectService.update",
+                f"project {project_id} marked done with no milestone_review-tagged "
+                f"task among its {len(tasks)} task(s) — closing without verification.",
+            )
 
 
 # ══════════════════════════════════════════════════════════════════ TaskService
@@ -513,13 +572,55 @@ class GoalService:
             raise
 
     def list_active(self) -> list[Goal]:
+        """Return goals that are actively being worked on (scheduled or in_progress)."""
         _slog("GoalService.list_active")
         try:
-            result = self._repo.list_by_status(GoalStatus.ACTIVE.value)
+            scheduled = self._repo.list_by_status(GoalStatus.SCHEDULED.value)
+            in_progress = self._repo.list_by_status(GoalStatus.IN_PROGRESS.value)
+            result = scheduled + in_progress
             _slog_result("GoalService.list_active", f"count={len(result)}")
             return result
         except Exception as exc:
             _slog_error("GoalService.list_active", exc)
+            raise
+
+    def resolve_active(self) -> Optional[Goal]:
+        """The single highest-priority goal among scheduled/in_progress (priority DESC, id ASC tiebreak).
+
+        This is the sole "active goal" signal — no separate active status/flag.
+        """
+        _slog("GoalService.resolve_active")
+        try:
+            result = self._repo.resolve_active()
+            _slog_result("GoalService.resolve_active", f"id={result.id if result else None}")
+            return result
+        except Exception as exc:
+            _slog_error("GoalService.resolve_active", exc)
+            raise
+
+    def activate(self, goal_id: int) -> Goal:
+        """Mark a goal as active: bump its priority above the current eligible max, set scheduled.
+
+        Priority ordering is the only signal for "which goal is active" — this does not
+        touch any other goal's status. Switching goals is purely a matter of which one
+        currently has the highest priority among scheduled/in_progress.
+        """
+        _slog("GoalService.activate", f"id={goal_id}")
+        try:
+            current = self._repo.get_by_id(goal_id)
+            if current is None:
+                raise ValueError(f"Goal {goal_id} not found")
+            others = [
+                g for g in self.list_active()
+                if g.id != goal_id
+            ]
+            max_other_priority = max((g.priority for g in others), default=0)
+            new_priority = max(current.priority, max_other_priority + 1)
+            result = self.update(goal_id=goal_id, status=GoalStatus.SCHEDULED.value, priority=new_priority)
+            _slog_result("GoalService.activate", f"id={result.id} priority={result.priority}")
+            return result
+        except Exception as exc:
+            _slog_error("GoalService.activate", exc)
             raise
 
     def create(
@@ -558,6 +659,9 @@ class GoalService:
         completed_at: Optional[str] = _MISSING,
         estimated_sessions: Optional[int] = _MISSING,
         actual_sessions: Optional[int] = None,
+        blocked_reason: Optional[str] = _MISSING,
+        blocked_note: Optional[str] = _MISSING,
+        handoff_note: Optional[str] = _MISSING,
     ) -> Goal:
         _slog("GoalService.update", f"id={goal_id}")
         try:
@@ -582,6 +686,12 @@ class GoalService:
                 goal.estimated_sessions = estimated_sessions
             if actual_sessions is not None:
                 goal.actual_sessions = actual_sessions
+            if blocked_reason is not _MISSING:
+                goal.blocked_reason = blocked_reason
+            if blocked_note is not _MISSING:
+                goal.blocked_note = blocked_note
+            if handoff_note is not _MISSING:
+                goal.handoff_note = handoff_note
 
             result = self._repo.update(goal)
             _slog_result("GoalService.update", f"id={result.id}")
