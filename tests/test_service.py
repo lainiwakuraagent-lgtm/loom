@@ -372,6 +372,46 @@ class TestTaskServiceUpdate:
         assert ts.get(task.id).tags == original_tags
 
 
+class TestTaskServiceAutoUnblock:
+    def test_marking_done_unblocks_dependent_with_satisfied_deps(self, ts, project):
+        blocker = ts.create("Blocker", project_id=project.id)
+        dependent = ts.create("Dependent", project_id=project.id)
+        ts.update(dependent.id, status="blocked_dep", depends=[blocker.id])
+
+        ts.update(blocker.id, status="done")
+
+        assert ts.get(dependent.id).status == Status.SCHEDULED
+
+    def test_marking_done_leaves_dependent_blocked_if_other_dep_open(self, ts, project):
+        blocker_a = ts.create("Blocker A", project_id=project.id)
+        blocker_b = ts.create("Blocker B", project_id=project.id)
+        dependent = ts.create("Dependent", project_id=project.id)
+        ts.update(dependent.id, status="blocked_dep", depends=[blocker_a.id, blocker_b.id])
+
+        ts.update(blocker_a.id, status="done")
+
+        assert ts.get(dependent.id).status == Status.BLOCKED_DEP
+
+    def test_marking_done_does_not_touch_unrelated_blocked_task(self, ts, project):
+        blocker = ts.create("Blocker", project_id=project.id)
+        other_blocker = ts.create("Other blocker", project_id=project.id)
+        unrelated = ts.create("Unrelated", project_id=project.id)
+        ts.update(unrelated.id, status="blocked_dep", depends=[other_blocker.id])
+
+        ts.update(blocker.id, status="done")
+
+        assert ts.get(unrelated.id).status == Status.BLOCKED_DEP
+
+    def test_non_done_transition_does_not_unblock(self, ts, project):
+        blocker = ts.create("Blocker", project_id=project.id)
+        dependent = ts.create("Dependent", project_id=project.id)
+        ts.update(dependent.id, status="blocked_dep", depends=[blocker.id])
+
+        ts.update(blocker.id, status="in_progress")
+
+        assert ts.get(dependent.id).status == Status.BLOCKED_DEP
+
+
 class TestTaskServiceDelete:
     def test_deletes_task(self, ts, task):
         assert ts.delete(task.id) is True

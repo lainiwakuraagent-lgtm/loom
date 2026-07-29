@@ -438,6 +438,8 @@ class TaskService:
             task.urgency_score = _compute_urgency(task)
             result = self._repo.update(task)
             self._record_field_changes(old_task, result)
+            if status is not None and Status(status) == Status.DONE:
+                self.auto_unblock_dependents(result.id)
             _slog_result("TaskService.update", f"id={result.id}")
             return result
         except Exception as exc:
