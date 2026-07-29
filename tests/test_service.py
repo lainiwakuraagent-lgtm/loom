@@ -770,3 +770,56 @@ class TestGetBlockedDigest:
     def test_invalid_status_raises_value_error(self, ts):
         with pytest.raises(ValueError, match="status must be one of"):
             ts.get_blocked_digest(status="unknown_status")
+
+
+# ════════════════════════════════════════════════ TaskService.reconcile_blocked_dep
+
+class TestReconcileBlockedDep:
+    """Tests for reconcile_blocked_dep and its integration with get_ready_queue."""
+
+    def test_replays_t366_scenario(self, ts):
+        """A blocked_dep task whose dep is done should be promoted by get_ready_queue."""
+        dep = ts.create("Dep task", status="scheduled")
+        # Mark dep done (simulates it completing via normal path)
+        ts.update(dep.id, status="done")
+        blocked = ts.create("Blocked task", status="blocked_dep", depends=[dep.id])
+        # Ensure blocked was NOT promoted by auto_unblock (it wasn't — dep done before
+        # blocked was created, so no done-transition event fired for blocked)
+        stuck = ts.get(blocked.id)
+        assert stuck.status.value == "blocked_dep"
+        # get_ready_queue reconciles on call
+        queue = ts.get_ready_queue()
+        ids = {t.id for t in queue}
+        assert blocked.id in ids
+        # Verify status actually changed in DB
+        refreshed = ts.get(blocked.id)
+        assert refreshed.status.value == "scheduled"
+
+    def test_genuinely_blocked_task_stays_blocked(self, ts):
+        """A task whose dep is still in_progress must not be promoted."""
+        dep = ts.create("In-progress dep", status="in_progress")
+        blocked = ts.create("Still blocked", status="blocked_dep", depends=[dep.id])
+        ts.reconcile_blocked_dep()
+        refreshed = ts.get(blocked.id)
+        assert refreshed.status.value == "blocked_dep"
+
+    def test_reconcile_is_idempotent(self, ts):
+        """Running reconcile twice produces the same result as running it once."""
+        dep = ts.create("Done dep", status="done")
+        blocked = ts.create("Blocked", status="blocked_dep", depends=[dep.id])
+        promoted1 = ts.reconcile_blocked_dep()
+        promoted2 = ts.reconcile_blocked_dep()
+        assert len(promoted1) == 1
+        assert promoted2 == []  # Second call: no stuck tasks remain
+
+    def test_multiple_deps_all_must_be_done(self, ts):
+        """Task with two deps: only promotes when BOTH are done."""
+        d1 = ts.create("Dep 1", status="done")
+        d2 = ts.create("Dep 2", status="scheduled")
+        blocked = ts.create("Needs both", status="blocked_dep", depends=[d1.id, d2.id])
+        ts.reconcile_blocked_dep()
+        assert ts.get(blocked.id).status.value == "blocked_dep"
+        # Complete dep 2 — now should promote
+        ts.update(d2.id, status="done")
+        ts.reconcile_blocked_dep()
+        assert ts.get(blocked.id).status.value == "scheduled"

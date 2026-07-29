@@ -333,3 +333,29 @@ def task_history(jar: JarContext, task_id: int, fmt: Optional[str]) -> None:
         sys.exit(1)
     finally:
         conn.close()
+
+
+@task.command("reconcile")
+@pass_jar
+def task_reconcile(jar: JarContext) -> None:
+    """Sweep all blocked_dep tasks and promote any whose deps are fully done.
+
+    Useful in maintenance sessions to catch tasks stuck blocked_dep via
+    hand-edits, retroactive depends, or other paths outside the normal
+    done-transition flow. get_ready_queue (loom queue) also calls this
+    automatically on every invocation.
+    """
+    from ..service import TaskService
+    conn = get_connection(jar.db_path)
+    init_db(conn)
+    try:
+        ts = TaskService(conn)
+        promoted = ts.reconcile_blocked_dep()
+        if promoted:
+            click.echo(f"Promoted {len(promoted)} task(s) from blocked_dep → scheduled:")
+            for t in promoted:
+                click.echo(f"  T{t.id}  {t.name}")
+        else:
+            click.echo("No stuck blocked_dep tasks found.")
+    finally:
+        conn.close()

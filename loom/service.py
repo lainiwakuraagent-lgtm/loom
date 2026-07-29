@@ -391,9 +391,14 @@ class TaskService:
             raise
 
     def get_ready_queue(self, goal_id: Optional[int] = None, limit: int = 10) -> list[Task]:
-        """Return top tasks ready to work on, ordered by urgency. Deps met, wait_until passed."""
+        """Return top tasks ready to work on, ordered by urgency. Deps met, wait_until passed.
+
+        Self-heals blocked_dep tasks before querying — any task stuck blocked_dep
+        with all deps now done is promoted to scheduled on every call.
+        """
         _slog("TaskService.get_ready_queue", f"goal_id={goal_id} limit={limit}")
         try:
+            self.reconcile_blocked_dep()
             result = self._repo.get_ready_queue(goal_id=goal_id, limit=limit)
             _slog_result("TaskService.get_ready_queue", f"count={len(result)}")
             return result
@@ -626,6 +631,38 @@ class TaskService:
             return result
         except Exception as exc:
             _slog_error("TaskService.get_history", exc)
+            raise
+
+    def reconcile_blocked_dep(self) -> list[Task]:
+        """Sweep all blocked_dep tasks and promote any whose deps are fully done.
+
+        Generalises auto_unblock_dependents from event-driven to batch — catches
+        tasks stuck blocked_dep via hand-edits, retroactive depends, or any path
+        that didn't go through TaskService.update's done-transition.
+        Called at the start of get_ready_queue so the queue self-heals on every
+        invocation.
+        """
+        _slog("TaskService.reconcile_blocked_dep", "full sweep")
+        unblocked = []
+        try:
+            candidates = self._repo.list_filtered(TaskFilter(status="blocked_dep"))
+            for task in candidates:
+                if not task.depends:
+                    # No deps declared — shouldn't be blocked_dep; promote it.
+                    task.status = Status.SCHEDULED
+                    task.urgency_score = _compute_urgency(task)
+                    self._repo.update(task)
+                    unblocked.append(task)
+                    continue
+                if all(self._is_done(dep_id) for dep_id in task.depends):
+                    task.status = Status.SCHEDULED
+                    task.urgency_score = _compute_urgency(task)
+                    self._repo.update(task)
+                    unblocked.append(task)
+            _slog_result("TaskService.reconcile_blocked_dep", f"promoted={len(unblocked)}")
+            return unblocked
+        except Exception as exc:
+            _slog_error("TaskService.reconcile_blocked_dep", exc)
             raise
 
     def auto_unblock_dependents(self, completed_task_id: int) -> list[Task]:
