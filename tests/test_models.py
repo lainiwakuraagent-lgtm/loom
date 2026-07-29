@@ -96,4 +96,5 @@ class TestProject:
         d = p.to_dict()
         assert set(d.keys()) == {"id", "name", "description", "start_date",
                                   "deployment_date", "goal_id", "status",
-                                  "created_at", "updated_at"}
+                                  "priority", "blocked_reason", "blocked_note",
+                                  "handoff_note", "created_at", "updated_at"}

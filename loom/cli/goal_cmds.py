@@ -78,7 +78,7 @@ def goal_list(jar: JarContext, show_all: bool, status: Optional[str]) -> None:
     try:
         goals = svc.list_all()
         if not show_all and status is None:
-            goals = [g for g in goals if g.status not in (GoalStatus.COMPLETED, GoalStatus.ABANDONED)]
+            goals = [g for g in goals if g.status not in (GoalStatus.DONE, GoalStatus.ABANDONED)]
         if status:
             goals = [g for g in goals if g.status.value == status]
         if not goals:
@@ -93,13 +93,17 @@ def goal_list(jar: JarContext, show_all: bool, status: Optional[str]) -> None:
         table.add_column("Name")
 
         status_colors = {
-            "active":      "green",
-            "in_progress": "cyan",
-            "blocked":     "red",
-            "review":      "yellow",
-            "desire":      "blue",
-            "completed":   "dim",
-            "abandoned":   "dim",
+            "scheduled":        "green",
+            "in_progress":      "cyan",
+            "needs_plan":       "yellow",
+            "blocked_owner":    "red",
+            "blocked_external": "red",
+            "review":           "yellow",
+            "desire":           "blue",
+            "suspended":        "dim",
+            "done":             "dim",
+            "failed":           "dim red",
+            "abandoned":        "dim",
         }
 
         for g in goals:
@@ -199,28 +203,44 @@ def goal_edit(
 
 @goal.command("activate")
 @click.argument("goal_id", type=int)
-@click.option("--pause-others", is_flag=True, default=False,
-              help="Move currently active goals to 'in_progress' (paused) status.")
 @pass_jar
-def goal_activate(jar: JarContext, goal_id: int, pause_others: bool) -> None:
+def goal_activate(jar: JarContext, goal_id: int) -> None:
     """Mark a goal as active.
 
-    With --pause-others, any goal currently marked 'active' is demoted to
-    'in_progress' to indicate it is paused but not abandoned.
+    There is no separate 'active' status. Activation bumps this goal's
+    priority above every other scheduled/in_progress goal and sets its
+    status to 'scheduled' — priority ordering alone decides which goal
+    `resolve_active()` returns. No other goal's status is touched.
     """
     svc, conn = _get_service(jar)
     try:
-        if pause_others:
-            active_goals = svc.list_active()
-            for ag in active_goals:
-                if ag.id != goal_id:
-                    svc.update(goal_id=ag.id, status="in_progress")
-                    _console.print(f"[yellow]Paused goal {ag.id}:[/yellow] {ag.name}")
+        g = svc.activate(goal_id)
+        _console.print(f"[green]Activated goal {g.id}:[/green] {g.name} (priority={g.priority})")
+    except ValueError:
+        _err.print(f"[red]Goal {goal_id} not found.[/red]")
+        sys.exit(1)
+    finally:
+        conn.close()
 
-        g = svc.update(goal_id=goal_id, status="active")
-        if g is None:
-            _err.print(f"[red]Goal {goal_id} not found.[/red]")
-            sys.exit(1)
-        _console.print(f"[green]Activated goal {g.id}:[/green] {g.name}")
+
+# ══════════════════════════════════════════════════════════════════ resolve-active
+
+@goal.command("resolve-active")
+@pass_jar
+def goal_resolve_active(jar: JarContext) -> None:
+    """Print the currently active goal's ID (highest-priority scheduled/in_progress goal).
+
+    Prints nothing (empty output) if no goal is eligible. This is the single
+    source of truth for "what's the active goal" — callers (wake.sh,
+    interactive.sh, etc.) should use this instead of querying the DB directly,
+    so there's exactly one implementation of the resolution logic.
+    """
+    svc, conn = _get_service(jar)
+    try:
+        g = svc.resolve_active()
+        if g is not None:
+            # Plain click.echo, not the rich console — this output is meant
+            # for shell capture ($(loom goal resolve-active)), not display.
+            click.echo(g.id)
     finally:
         conn.close()

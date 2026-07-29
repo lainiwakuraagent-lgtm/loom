@@ -9,25 +9,44 @@ from typing import Optional
 
 
 class Status(str, Enum):
-    TRIAGE        = "triage"
-    DESIRE        = "desire"
-    SCHEDULED     = "scheduled"
-    IN_PROGRESS   = "in_progress"
-    BLOCKED_DEP   = "blocked_dep"
-    BLOCKED_OWNER = "blocked_owner"
-    SUSPENDED     = "suspended"
-    DONE          = "done"
-    FAILED        = "failed"
+    TRIAGE           = "triage"
+    DESIRE           = "desire"
+    NEEDS_PLAN       = "needs_plan"
+    SCHEDULED        = "scheduled"
+    IN_PROGRESS      = "in_progress"
+    BLOCKED_DEP      = "blocked_dep"
+    BLOCKED_OWNER    = "blocked_owner"
+    BLOCKED_EXTERNAL = "blocked_external"
+    SUSPENDED        = "suspended"
+    DONE             = "done"
+    FAILED           = "failed"
+
+
+class ProjectStatus(str, Enum):
+    TRIAGE           = "triage"
+    DESIRE           = "desire"
+    NEEDS_PLAN       = "needs_plan"
+    SCHEDULED        = "scheduled"
+    IN_PROGRESS      = "in_progress"
+    BLOCKED_OWNER    = "blocked_owner"
+    BLOCKED_EXTERNAL = "blocked_external"
+    SUSPENDED        = "suspended"
+    DONE             = "done"
+    FAILED           = "failed"
 
 
 class GoalStatus(str, Enum):
-    DESIRE      = "desire"
-    ACTIVE      = "active"
-    IN_PROGRESS = "in_progress"
-    BLOCKED     = "blocked"
-    REVIEW      = "review"
-    COMPLETED   = "completed"
-    ABANDONED   = "abandoned"
+    DESIRE           = "desire"
+    NEEDS_PLAN       = "needs_plan"
+    SCHEDULED        = "scheduled"
+    IN_PROGRESS      = "in_progress"
+    BLOCKED_OWNER    = "blocked_owner"
+    BLOCKED_EXTERNAL = "blocked_external"
+    SUSPENDED        = "suspended"
+    DONE             = "done"
+    FAILED           = "failed"
+    ABANDONED        = "abandoned"
+    REVIEW           = "review"
 
 
 class TagEnum(str, Enum):
@@ -60,6 +79,9 @@ class Goal:
     completed_at: Optional[str] = None
     estimated_sessions: Optional[int] = None
     actual_sessions: int = 0
+    blocked_reason: Optional[str] = None
+    blocked_note: Optional[str] = None
+    handoff_note: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -74,6 +96,9 @@ class Goal:
             "completed_at": self.completed_at,
             "estimated_sessions": self.estimated_sessions,
             "actual_sessions": self.actual_sessions,
+            "blocked_reason": self.blocked_reason,
+            "blocked_note": self.blocked_note,
+            "handoff_note": self.handoff_note,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -215,11 +240,15 @@ class TaskEvent:
 class Project:
     name: str
     id: Optional[int] = None
-    description: Optional[str] = None      # Should contain MVP: and EVALUATION: sections
+    description: Optional[str] = None
     start_date: Optional[str] = None       # ISO-8601 date string
     deployment_date: Optional[str] = None  # ISO-8601 date string
     goal_id: Optional[int] = None
-    status: str = "planned"
+    status: ProjectStatus = ProjectStatus.SCHEDULED
+    priority: int = 0
+    blocked_reason: Optional[str] = None
+    blocked_note: Optional[str] = None
+    handoff_note: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -231,7 +260,11 @@ class Project:
             "start_date": self.start_date,
             "deployment_date": self.deployment_date,
             "goal_id": self.goal_id,
-            "status": self.status,
+            "status": self.status.value if isinstance(self.status, ProjectStatus) else self.status,
+            "priority": self.priority,
+            "blocked_reason": self.blocked_reason,
+            "blocked_note": self.blocked_note,
+            "handoff_note": self.handoff_note,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }

@@ -16,6 +16,7 @@ from rich.console import Console
 from ..db import get_connection, init_db
 from ..filters import ProjectFilter, SortSpec
 from ..formatters import format_project_detail, format_projects
+from ..models import ProjectStatus
 from ..service import ProjectService
 
 from .main import JarContext, parse_sort_option, pass_jar
@@ -40,27 +41,39 @@ def project() -> None:
 
 @project.command("add")
 @click.option("--name",              "-n", default=None, help="Project name.")
+@click.option("--description",             default=None, help="Project description.")
+@click.option("--goal-id",                 default=None, type=int, help="Parent goal ID.")
 @click.option("--start-date",        "-s", default=None, metavar="YYYY-MM-DD", help="Start date.")
 @click.option("--deployment-date",   "-d", default=None, metavar="YYYY-MM-DD", help="Target deployment date.")
+@click.option("--status",                  default="scheduled",
+              type=click.Choice([s.value for s in ProjectStatus], case_sensitive=False),
+              show_default=True, help="Initial status.")
+@click.option("--priority",          "-p", default=0, type=int, show_default=True, help="Priority (higher = more urgent).")
 @click.option("--edit-description",  "-D", is_flag=True, default=False, help="Open $EDITOR to write project description.")
 @pass_jar
-def project_add(jar: JarContext, name: Optional[str], start_date: Optional[str], deployment_date: Optional[str], edit_description: bool) -> None:
+def project_add(jar: JarContext, name: Optional[str], description: Optional[str], goal_id: Optional[int],
+                start_date: Optional[str], deployment_date: Optional[str],
+                status: str, priority: int, edit_description: bool) -> None:
     """Create a new project.
 
-    Only --name is required. Use -D to open $EDITOR for a multi-line description.
+    Only --name is required. Use --description for a one-line description, or
+    -D to open $EDITOR for a multi-line one (--description wins if both given).
     All other fields are optional and editable later with `jar project edit`.
     """
     if not name:
         name = click.prompt("Project name")
 
-    description = None
     if edit_description:
         raw = click.edit("")
-        description = raw.strip() if raw else None
+        edited = raw.strip() if raw else None
+        if description is None:
+            description = edited
 
     svc, conn = _get_service(jar)
     try:
-        p = svc.create(name=name, description=description, start_date=start_date, deployment_date=deployment_date)
+        p = svc.create(name=name, description=description, start_date=start_date,
+                        deployment_date=deployment_date, goal_id=goal_id,
+                        status=status, priority=priority)
         _err.print(f"[green]Created project #{p.id}:[/green] {p.name}")
     except ValueError as exc:
         _err.print(f"[red]Error:[/red] {exc}")
@@ -74,16 +87,26 @@ def project_add(jar: JarContext, name: Optional[str], start_date: Optional[str],
 @project.command("edit")
 @click.argument("project_id", type=int)
 @click.option("--name",            "-n", default=None, help="New name.")
+@click.option("--description",           default=None, help="New description.")
+@click.option("--goal-id",               default=None, type=int, help="New parent goal ID.")
 @click.option("--start-date",      "-s", default=None, metavar="YYYY-MM-DD", help="New start date (use '' to clear).")
 @click.option("--deployment-date", "-d", default=None, metavar="YYYY-MM-DD", help="New deployment date (use '' to clear).")
+@click.option("--status",                default=None,
+              type=click.Choice([s.value for s in ProjectStatus], case_sensitive=False),
+              help="New status.")
+@click.option("--priority",        "-p", default=None, type=int, help="New priority.")
 @click.option("--edit-description", "-D", is_flag=True, default=False, help="Open editor to rewrite description.")
 @pass_jar
 def project_edit(
     jar: JarContext,
     project_id: int,
     name: Optional[str],
+    description: Optional[str],
+    goal_id: Optional[int],
     start_date: Optional[str],
     deployment_date: Optional[str],
+    status: Optional[str],
+    priority: Optional[int],
     edit_description: bool,
 ) -> None:
     """Edit an existing project by ID."""
@@ -97,13 +120,21 @@ def project_edit(
         kwargs: dict = {}
         if name is not None:
             kwargs["name"] = name
+        if description is not None:
+            kwargs["description"] = description
+        if goal_id is not None:
+            kwargs["goal_id"] = goal_id
         # Map empty string → None for nullable date fields
         if start_date is not None:
             kwargs["start_date"] = start_date or None
         if deployment_date is not None:
             kwargs["deployment_date"] = deployment_date or None
+        if status is not None:
+            kwargs["status"] = status
+        if priority is not None:
+            kwargs["priority"] = priority
 
-        if edit_description:
+        if edit_description and description is None:
             new_desc = click.edit(p.description or "")
             if new_desc is not None:
                 kwargs["description"] = new_desc.strip() or None

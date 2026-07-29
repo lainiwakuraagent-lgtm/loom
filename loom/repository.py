@@ -8,7 +8,7 @@ from typing import Optional
 
 from .filters import ProjectFilter, SortSpec, TaskFilter, build_project_query, build_task_query
 from .logging_config import get_db_logger
-from .models import EventType, Goal, GoalStatus, LoomSession, Project, Status, Task, TaskEvent
+from .models import EventType, Goal, GoalStatus, LoomSession, Project, ProjectStatus, Status, Task, TaskEvent
 
 
 def _now_utc() -> str:
@@ -247,8 +247,9 @@ class ProjectRepository:
         with self._conn:
             cur = self._conn.execute(
                 """
-                INSERT INTO projects (name, description, start_date, deployment_date, goal_id, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO projects (name, description, start_date, deployment_date, goal_id, status,
+                                      priority, blocked_reason, blocked_note, handoff_note, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project.name,
@@ -256,7 +257,11 @@ class ProjectRepository:
                     project.start_date,
                     project.deployment_date,
                     project.goal_id,
-                    project.status,
+                    project.status.value if isinstance(project.status, ProjectStatus) else project.status,
+                    project.priority,
+                    project.blocked_reason,
+                    project.blocked_note,
+                    project.handoff_note,
                     now,
                     now,
                 ),
@@ -275,7 +280,8 @@ class ProjectRepository:
             self._conn.execute(
                 """
                 UPDATE projects
-                SET name=?, description=?, start_date=?, deployment_date=?, goal_id=?, status=?, updated_at=?
+                SET name=?, description=?, start_date=?, deployment_date=?, goal_id=?, status=?,
+                    priority=?, blocked_reason=?, blocked_note=?, handoff_note=?, updated_at=?
                 WHERE id=?
                 """,
                 (
@@ -284,7 +290,11 @@ class ProjectRepository:
                     project.start_date,
                     project.deployment_date,
                     project.goal_id,
-                    project.status,
+                    project.status.value if isinstance(project.status, ProjectStatus) else project.status,
+                    project.priority,
+                    project.blocked_reason,
+                    project.blocked_note,
+                    project.handoff_note,
                     now,
                     project.id,
                 ),
@@ -309,6 +319,16 @@ class ProjectRepository:
             (project_id,),
         ).fetchall()
         return [_row_to_task(r) for r in rows]
+
+    def resolve_active(self, goal_id: int) -> Optional[Project]:
+        """Highest-priority project under goal_id among scheduled/in_progress (priority DESC, id ASC tiebreak)."""
+        _log("SELECT", "projects", f"resolve_active goal_id={goal_id}")
+        row = self._conn.execute(
+            "SELECT * FROM projects WHERE goal_id = ? AND status IN ('scheduled', 'in_progress') "
+            "ORDER BY priority DESC, id ASC LIMIT 1",
+            (goal_id,),
+        ).fetchone()
+        return _row_to_project(row) if row else None
 
 
 # ══════════════════════════════════════════════════════════════════ Goal repo
@@ -335,6 +355,15 @@ class GoalRepository:
         ).fetchall()
         return [_row_to_goal(r) for r in rows]
 
+    def resolve_active(self) -> Optional[Goal]:
+        """Highest-priority goal among scheduled/in_progress (priority DESC, id ASC tiebreak)."""
+        _log("SELECT", "goals", "resolve_active")
+        row = self._conn.execute(
+            "SELECT * FROM goals WHERE status IN ('scheduled', 'in_progress') "
+            "ORDER BY priority DESC, id ASC LIMIT 1"
+        ).fetchone()
+        return _row_to_goal(row) if row else None
+
     def insert(self, goal: Goal) -> Goal:
         now = _now_utc()
         _log("INSERT", "goals", f"name={goal.name!r}")
@@ -343,9 +372,10 @@ class GoalRepository:
                 """
                 INSERT INTO goals (
                     name, description, status, priority, started_at, completed_at,
-                    estimated_sessions, actual_sessions, created_at, updated_at
+                    estimated_sessions, actual_sessions, blocked_reason, blocked_note,
+                    handoff_note, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     goal.name,
@@ -356,6 +386,9 @@ class GoalRepository:
                     goal.completed_at,
                     goal.estimated_sessions,
                     goal.actual_sessions,
+                    goal.blocked_reason,
+                    goal.blocked_note,
+                    goal.handoff_note,
                     now,
                     now,
                 ),
@@ -375,7 +408,8 @@ class GoalRepository:
                 """
                 UPDATE goals
                 SET name=?, description=?, status=?, priority=?, started_at=?,
-                    completed_at=?, estimated_sessions=?, actual_sessions=?, updated_at=?
+                    completed_at=?, estimated_sessions=?, actual_sessions=?,
+                    blocked_reason=?, blocked_note=?, handoff_note=?, updated_at=?
                 WHERE id=?
                 """,
                 (
@@ -387,6 +421,9 @@ class GoalRepository:
                     goal.completed_at,
                     goal.estimated_sessions,
                     goal.actual_sessions,
+                    goal.blocked_reason,
+                    goal.blocked_note,
+                    goal.handoff_note,
                     now,
                     goal.id,
                 ),
@@ -522,6 +559,11 @@ def _row_to_task_event(row: sqlite3.Row) -> TaskEvent:
 
 def _row_to_project(row: sqlite3.Row) -> Project:
     keys = row.keys()
+    raw_status = row["status"] if "status" in keys else "scheduled"
+    try:
+        status = ProjectStatus(raw_status)
+    except ValueError:
+        status = raw_status
     return Project(
         id=row["id"],
         name=row["name"],
@@ -529,13 +571,18 @@ def _row_to_project(row: sqlite3.Row) -> Project:
         start_date=row["start_date"],
         deployment_date=row["deployment_date"],
         goal_id=row["goal_id"] if "goal_id" in keys else None,
-        status=row["status"] if "status" in keys else "planned",
+        status=status,
+        priority=row["priority"] if "priority" in keys else 0,
+        blocked_reason=row["blocked_reason"] if "blocked_reason" in keys else None,
+        blocked_note=row["blocked_note"] if "blocked_note" in keys else None,
+        handoff_note=row["handoff_note"] if "handoff_note" in keys else None,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
 
 
 def _row_to_goal(row: sqlite3.Row) -> Goal:
+    keys = row.keys()
     return Goal(
         id=row["id"],
         name=row["name"],
@@ -546,6 +593,9 @@ def _row_to_goal(row: sqlite3.Row) -> Goal:
         completed_at=row["completed_at"],
         estimated_sessions=row["estimated_sessions"],
         actual_sessions=row["actual_sessions"],
+        blocked_reason=row["blocked_reason"] if "blocked_reason" in keys else None,
+        blocked_note=row["blocked_note"] if "blocked_note" in keys else None,
+        handoff_note=row["handoff_note"] if "handoff_note" in keys else None,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )

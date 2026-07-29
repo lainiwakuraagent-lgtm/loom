@@ -5,7 +5,7 @@ from loom.db import get_connection, init_db
 from loom.filters import ProjectFilter, SortSpec, TaskFilter
 import json
 from loom.models import EventType, Status
-from loom.service import ProjectService, TaskService
+from loom.service import GoalService, ProjectService, TaskService
 
 
 @pytest.fixture
@@ -19,6 +19,11 @@ def conn():
 @pytest.fixture
 def ps(conn):
     return ProjectService(conn)
+
+
+@pytest.fixture
+def gs(conn):
+    return GoalService(conn)
 
 
 @pytest.fixture
@@ -147,6 +152,135 @@ class TestProjectServiceListFiltered:
         ts.create("Child", project_id=p_with.id)
         assert len(ps.list_filtered(ProjectFilter(has_tasks=True))) == 1
         assert len(ps.list_filtered(ProjectFilter(has_tasks=False))) == 1
+
+
+class TestProjectServiceDoneGuard:
+    """loom.service's logger sets propagate=False, so pytest's caplog (which
+    listens via root propagation) can't see these records — attach a
+    collecting handler directly to the logger instead.
+    """
+
+    @pytest.fixture
+    def service_log_records(self):
+        import logging
+        from loom.logging_config import get_service_logger
+
+        records = []
+
+        class _Collector(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        handler = _Collector()
+        logger = get_service_logger()
+        logger.addHandler(handler)
+        try:
+            yield records
+        finally:
+            logger.removeHandler(handler)
+
+    def test_warns_when_no_milestone_review_task(self, ps, ts, service_log_records):
+        p = ps.create("No verification")
+        ts.create("Just a task", project_id=p.id, tags=["feature"])
+        ps.update(p.id, status="done")
+        assert any("no milestone_review-tagged task" in r.getMessage() for r in service_log_records)
+
+    def test_no_warning_when_milestone_review_task_present(self, ps, ts, service_log_records):
+        p = ps.create("Verified")
+        ts.create("Checked", project_id=p.id, tags=["milestone_review"])
+        ps.update(p.id, status="done")
+        assert not any("no milestone_review-tagged task" in r.getMessage() for r in service_log_records)
+
+    def test_no_warning_for_non_done_transitions(self, ps, ts, service_log_records):
+        p = ps.create("In flight")
+        ts.create("Just a task", project_id=p.id, tags=["feature"])
+        ps.update(p.id, status="in_progress")
+        assert not any("no milestone_review-tagged task" in r.getMessage() for r in service_log_records)
+
+    def test_guard_does_not_block_the_update(self, ps, ts):
+        p = ps.create("Closes anyway")
+        ts.create("Just a task", project_id=p.id, tags=["feature"])
+        result = ps.update(p.id, status="done")
+        assert result.status.value == "done"
+
+
+class TestProjectServiceResolveActive:
+    def test_picks_highest_priority_under_goal(self, ps, gs):
+        goal = gs.create("Goal A", status="scheduled")
+        ps.create("Low", goal_id=goal.id, status="scheduled", priority=1)
+        high = ps.create("High", goal_id=goal.id, status="scheduled", priority=5)
+        assert ps.resolve_active(goal.id).id == high.id
+
+    def test_ignores_projects_under_other_goals(self, ps, gs):
+        goal_a = gs.create("Goal A", status="scheduled")
+        goal_b = gs.create("Goal B", status="scheduled")
+        ps.create("Under B", goal_id=goal_b.id, status="scheduled", priority=10)
+        assert ps.resolve_active(goal_a.id) is None
+
+    def test_excludes_desire_and_needs_plan(self, ps, gs):
+        goal = gs.create("Goal A", status="scheduled")
+        ps.create("Unvetted", goal_id=goal.id, status="desire", priority=10)
+        assert ps.resolve_active(goal.id) is None
+
+    def test_tiebreak_lower_id_wins(self, ps, gs):
+        goal = gs.create("Goal A", status="scheduled")
+        first = ps.create("First", goal_id=goal.id, status="scheduled", priority=3)
+        ps.create("Second", goal_id=goal.id, status="scheduled", priority=3)
+        assert ps.resolve_active(goal.id).id == first.id
+
+
+# ════════════════════════════════════════════════ GoalService
+
+class TestGoalServiceResolveActive:
+    def test_picks_highest_priority(self, gs):
+        gs.create("Low", status="scheduled", priority=1)
+        high = gs.create("High", status="scheduled", priority=5)
+        assert gs.resolve_active().id == high.id
+
+    def test_in_progress_counts_as_eligible(self, gs):
+        g = gs.create("Working", status="in_progress", priority=1)
+        assert gs.resolve_active().id == g.id
+
+    def test_excludes_desire_and_suspended(self, gs):
+        gs.create("Idea", status="desire", priority=10)
+        gs.create("Paused", status="suspended", priority=10)
+        assert gs.resolve_active() is None
+
+    def test_tiebreak_lower_id_wins(self, gs):
+        first = gs.create("First", status="scheduled", priority=3)
+        gs.create("Second", status="scheduled", priority=3)
+        assert gs.resolve_active().id == first.id
+
+    def test_no_eligible_goals_returns_none(self, gs):
+        assert gs.resolve_active() is None
+
+
+class TestGoalServiceActivate:
+    def test_bumps_priority_above_current_max(self, gs):
+        gs.create("Existing", status="scheduled", priority=5)
+        target = gs.create("New", status="desire", priority=0)
+        activated = gs.activate(target.id)
+        assert activated.priority > 5
+        assert activated.status.value == "scheduled"
+        assert gs.resolve_active().id == target.id
+
+    def test_does_not_touch_other_goals_status_or_priority(self, gs):
+        other = gs.create("Other", status="scheduled", priority=5)
+        target = gs.create("Target", status="scheduled", priority=1)
+        gs.activate(target.id)
+        reloaded = gs.get(other.id)
+        assert reloaded.status.value == "scheduled"
+        assert reloaded.priority == 5
+
+    def test_keeps_own_priority_if_already_highest(self, gs):
+        gs.create("Lower", status="scheduled", priority=1)
+        target = gs.create("Already top", status="scheduled", priority=10)
+        activated = gs.activate(target.id)
+        assert activated.priority == 10
+
+    def test_unknown_goal_raises(self, gs):
+        with pytest.raises(ValueError):
+            gs.activate(9999)
 
 
 # ════════════════════════════════════════════════ TaskService
