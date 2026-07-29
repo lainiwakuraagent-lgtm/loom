@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from typing import Optional
 
@@ -23,8 +23,18 @@ from .repository import (
     TaskRepository,
 )
 
-# Sentinel for "caller did not supply this argument" (distinct from None).
 _MISSING = object()
+
+
+@dataclass
+class ProjectStatusReport:
+    """Aggregated status snapshot for a single project."""
+    project: "Project"
+    counts: dict           # {status_value: count} — zero-filled for every Status
+    blocked: list          # Tasks in any blocked_* status, with reason/note preserved
+    recently_completed: list  # Done tasks, updated_at desc, capped at recent_limit
+    next_actionable: list  # Scheduled/in_progress tasks, urgency_score desc, capped
+    total: int
 
 # Fields tracked in the lifecycle event log.
 _TRACKED_FIELDS = ("name", "description", "tags", "deadline", "status", "project_id")
@@ -249,6 +259,54 @@ class ProjectService:
             return result
         except Exception as exc:
             _slog_error("ProjectService.tasks_for_project", exc)
+            raise
+
+    def status_report(self, project_id: int, recent_limit: int = 5) -> ProjectStatusReport:
+        """Aggregate task counts and split by status group for a quick project health view."""
+        _slog("ProjectService.status_report", f"project_id={project_id} recent_limit={recent_limit}")
+        try:
+            project = self._repo.get_by_id(project_id)
+            if project is None:
+                raise ValueError(f"Project {project_id} not found")
+            tasks = self._repo.tasks_for_project(project_id)
+
+            counts = {s.value: 0 for s in Status}
+            for t in tasks:
+                sv = t.status.value if hasattr(t.status, "value") else str(t.status)
+                counts[sv] = counts.get(sv, 0) + 1
+
+            blocked_statuses = {"blocked_dep", "blocked_owner", "blocked_external"}
+            actionable_statuses = {"scheduled", "in_progress"}
+
+            blocked = [
+                t for t in tasks
+                if (t.status.value if hasattr(t.status, "value") else str(t.status)) in blocked_statuses
+            ]
+
+            done = [
+                t for t in tasks
+                if (t.status.value if hasattr(t.status, "value") else str(t.status)) == "done"
+            ]
+            done.sort(key=lambda t: t.updated_at or "", reverse=True)
+
+            actionable = [
+                t for t in tasks
+                if (t.status.value if hasattr(t.status, "value") else str(t.status)) in actionable_statuses
+            ]
+            actionable.sort(key=lambda t: t.urgency_score, reverse=True)
+
+            result = ProjectStatusReport(
+                project=project,
+                counts=counts,
+                blocked=blocked,
+                recently_completed=done[:recent_limit],
+                next_actionable=actionable[:recent_limit],
+                total=len(tasks),
+            )
+            _slog_result("ProjectService.status_report", f"total={result.total} blocked={len(blocked)}")
+            return result
+        except Exception as exc:
+            _slog_error("ProjectService.status_report", exc)
             raise
 
     def resolve_active(self, goal_id: int) -> Optional[Project]:

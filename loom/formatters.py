@@ -17,6 +17,7 @@ from rich.table import Table
 from rich import box
 
 from .models import Project, Task, TaskEvent
+from .service import ProjectStatusReport
 
 # Supported format names
 FORMATS = ("table", "json", "csv", "plain")
@@ -320,4 +321,65 @@ def format_project_detail(project: Project, tasks: list[Task], out: TextIO = sys
         _task_table(tasks, out)
     else:
         console.print("[dim]No tasks assigned.[/dim]")
+    _hr(console)
+
+
+_STATUS_ORDER = [
+    "scheduled", "in_progress",
+    "blocked_dep", "blocked_owner", "blocked_external",
+    "done", "failed", "suspended",
+    "needs_plan", "desire", "triage",
+]
+
+
+def format_project_status(report: ProjectStatusReport, out: TextIO = sys.stdout) -> None:
+    """Rich status-rollup panel for a project."""
+    console = Console(file=out, highlight=False, legacy_windows=False)
+    p = report.project
+    status_val = p.status.value if hasattr(p.status, "value") else str(p.status)
+
+    _hr(console, f"Project #{p.id} — {p.name}")
+    console.print(f"[bold]Status:[/bold]   {status_val}   [dim]({report.total} tasks total)[/dim]")
+
+    # Count summary — skip statuses with 0 unless they're the active groups
+    active_statuses = {"scheduled", "in_progress", "blocked_dep", "blocked_owner", "blocked_external"}
+    console.print()
+    console.print("[bold]Task counts:[/bold]")
+    for sv in _STATUS_ORDER:
+        n = report.counts.get(sv, 0)
+        if n == 0 and sv not in active_statuses:
+            continue
+        style = _STATUS_STYLES.get(sv, "dim")
+        marker = f"[{style}]{sv}[/{style}]" if style != "dim" else f"[dim]{sv}[/dim]"
+        console.print(f"  {marker:<35}  {n}")
+
+    # Next actionable
+    _hr(console, f"Next actionable ({len(report.next_actionable)})")
+    if report.next_actionable:
+        _task_table(report.next_actionable, out)
+    else:
+        console.print("[dim]No scheduled or in-progress tasks.[/dim]")
+
+    # Blocked
+    _hr(console, f"Blocked ({len(report.blocked)})")
+    if report.blocked:
+        for t in report.blocked:
+            sv = t.status.value if hasattr(t.status, "value") else str(t.status)
+            console.print(f"  [yellow]#{t.id}[/yellow] {t.name}  [dim]({sv})[/dim]")
+            if t.blocked_reason:
+                console.print(f"       [dim]reason: {t.blocked_reason}[/dim]")
+            if t.blocked_note:
+                console.print(f"       [dim]note:   {t.blocked_note}[/dim]")
+    else:
+        console.print("[dim]No blocked tasks.[/dim]")
+
+    # Recently completed
+    _hr(console, f"Recently completed ({report.counts.get('done', 0)})")
+    if report.recently_completed:
+        _task_table(report.recently_completed, out)
+        if report.counts.get("done", 0) > len(report.recently_completed):
+            console.print(f"[dim]  … {report.counts['done'] - len(report.recently_completed)} more done task(s) not shown[/dim]")
+    else:
+        console.print("[dim]No completed tasks yet.[/dim]")
+
     _hr(console)

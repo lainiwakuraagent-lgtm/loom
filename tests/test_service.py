@@ -566,3 +566,73 @@ class TestTaskServiceHistory:
             parsed = json.loads(e.task_snapshot)
             assert isinstance(parsed, dict)
             assert "name" in parsed
+
+
+# ════════════════════════════════════════════════ ProjectService.status_report
+
+class TestProjectServiceStatusReport:
+    def _setup(self, ps, ts):
+        """Return (project, tasks) with a mix of statuses."""
+        p = ps.create("Rollup Project")
+        t_sched_h = ts.create("High priority", project_id=p.id, status="scheduled", priority="H")
+        t_sched_m = ts.create("Med priority",  project_id=p.id, status="scheduled", priority="M")
+        t_done1   = ts.create("Done first",    project_id=p.id, status="done")
+        t_done2   = ts.create("Done second",   project_id=p.id, status="done")
+        t_block   = ts.create("Blocked task",  project_id=p.id, status="blocked_owner")
+        ts.update(t_block.id, blocked_reason="waiting_decision", blocked_note="ask owner")
+        return p, (t_sched_h, t_sched_m, t_done1, t_done2, t_block)
+
+    def test_counts_add_up_to_total(self, ps, ts):
+        p, _ = self._setup(ps, ts)
+        r = ps.status_report(p.id)
+        assert sum(r.counts.values()) == r.total
+        assert r.total == 5
+
+    def test_counts_zero_filled_for_all_statuses(self, ps, ts):
+        p, _ = self._setup(ps, ts)
+        r = ps.status_report(p.id)
+        from loom.models import Status
+        for s in Status:
+            assert s.value in r.counts
+
+    def test_blocked_items_carry_reason_and_note(self, ps, ts):
+        p, _ = self._setup(ps, ts)
+        r = ps.status_report(p.id)
+        assert len(r.blocked) == 1
+        b = r.blocked[0]
+        assert b.blocked_reason == "waiting_decision"
+        assert b.blocked_note == "ask owner"
+
+    def test_recently_completed_contains_only_done_tasks(self, ps, ts):
+        p, _ = self._setup(ps, ts)
+        r = ps.status_report(p.id)
+        assert len(r.recently_completed) == 2
+        for t in r.recently_completed:
+            assert t.status.value == "done"
+
+    def test_next_actionable_sorted_by_urgency_score(self, ps, ts):
+        p, (t_high, t_med, _, _, _) = self._setup(ps, ts)
+        r = ps.status_report(p.id)
+        assert len(r.next_actionable) == 2
+        assert r.next_actionable[0].id == t_high.id
+
+    def test_empty_project_returns_zero_filled_counts(self, ps):
+        p = ps.create("Empty")
+        r = ps.status_report(p.id)
+        assert r.total == 0
+        assert all(v == 0 for v in r.counts.values())
+        assert r.blocked == []
+        assert r.recently_completed == []
+        assert r.next_actionable == []
+
+    def test_recent_limit_respected(self, ps, ts):
+        p = ps.create("Many done")
+        for i in range(8):
+            ts.create(f"Task {i}", project_id=p.id, status="done")
+        r = ps.status_report(p.id, recent_limit=3)
+        assert len(r.recently_completed) == 3
+        assert r.counts["done"] == 8
+
+    def test_not_found_raises(self, ps):
+        with pytest.raises(ValueError, match="not found"):
+            ps.status_report(99999)

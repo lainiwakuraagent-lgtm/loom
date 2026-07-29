@@ -15,7 +15,7 @@ from rich.console import Console
 
 from ..db import get_connection, init_db
 from ..filters import ProjectFilter, SortSpec
-from ..formatters import format_project_detail, format_projects
+from ..formatters import format_project_detail, format_project_status, format_projects
 from ..models import ProjectStatus
 from ..service import ProjectService
 
@@ -234,5 +234,25 @@ def project_show(jar: JarContext, project_id: int) -> None:
             sys.exit(1)
         tasks = svc.tasks_for_project(project_id)
         format_project_detail(p, tasks)
+    finally:
+        conn.close()
+
+
+# ══════════════════════════════════════════════════════════════════ status
+
+@project.command("status")
+@click.argument("project_id", type=int)
+@click.option("--recent-limit", "-r", default=5, type=int, show_default=True,
+              help="Max recently-completed and next-actionable tasks to show.")
+@pass_jar
+def project_status(jar: JarContext, project_id: int, recent_limit: int) -> None:
+    """One-shot project health view: counts, blocked tasks, and what's next."""
+    svc, conn = _get_service(jar)
+    try:
+        report = svc.status_report(project_id, recent_limit=recent_limit)
+        format_project_status(report)
+    except ValueError as exc:
+        _err.print(f"[red]Error:[/red] {exc}")
+        sys.exit(1)
     finally:
         conn.close()
