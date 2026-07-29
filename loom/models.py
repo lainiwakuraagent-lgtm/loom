@@ -151,7 +151,11 @@ class Task:
     def depends_from_str(raw: Optional[str]) -> Optional[list[int]]:
         if not raw:
             return None
-        return json.loads(raw)
+        parsed = json.loads(raw)
+        # Normalize: a bare int (legacy single-dep storage) → list
+        if isinstance(parsed, int):
+            return [parsed]
+        return parsed
 
     def to_dict(self) -> dict:
         return {
