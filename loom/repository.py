@@ -359,7 +359,7 @@ class GoalRepository:
         """Highest-priority goal among scheduled/in_progress (priority DESC, id ASC tiebreak)."""
         _log("SELECT", "goals", "resolve_active")
         row = self._conn.execute(
-            "SELECT * FROM goals WHERE status IN ('scheduled', 'in_progress') "
+            "SELECT * FROM goals WHERE status IN ('scheduled', 'in_progress', 'active') "
             "ORDER BY priority DESC, id ASC LIMIT 1"
         ).fetchone()
         return _row_to_goal(row) if row else None
