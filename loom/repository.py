@@ -583,11 +583,17 @@ def _row_to_project(row: sqlite3.Row) -> Project:
 
 def _row_to_goal(row: sqlite3.Row) -> Goal:
     keys = row.keys()
+    raw_status = row["status"] if "status" in keys else "scheduled"
+    try:
+        goal_status = GoalStatus(raw_status)
+    except ValueError:
+        # Legacy 'active' status (pre-priority-based-resolution) → treat as scheduled
+        goal_status = GoalStatus.SCHEDULED
     return Goal(
         id=row["id"],
         name=row["name"],
         description=row["description"],
-        status=GoalStatus(row["status"]),
+        status=goal_status,
         priority=row["priority"],
         started_at=row["started_at"],
         completed_at=row["completed_at"],
