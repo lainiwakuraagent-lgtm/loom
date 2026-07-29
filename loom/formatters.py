@@ -14,10 +14,11 @@ from typing import TextIO
 
 from rich.console import Console
 from rich.table import Table
+from rich.tree import Tree
 from rich import box
 
 from .models import Project, Task, TaskEvent
-from .service import ProjectStatusReport
+from .service import DependencyTree, ProjectStatusReport
 
 # Supported format names
 FORMATS = ("table", "json", "csv", "plain")
@@ -290,11 +291,19 @@ def format_task_detail(task: Task, out: TextIO = sys.stdout) -> None:
     _hr(console, f"Task #{task.id}")
     console.print(f"[bold]Name:[/bold]        {task.name}")
     console.print(f"[bold]Status:[/bold]      [{style}]{status_val}[/{style}]" if style else f"[bold]Status:[/bold]      {status_val}")
+    console.print(f"[bold]Priority:[/bold]    {task.priority or '-'}")
     console.print(f"[bold]Tags:[/bold]        {', '.join(task.tags) if task.tags else '-'}")
     console.print(f"[bold]Deadline:[/bold]    {task.deadline or '-'}")
     console.print(f"[bold]Project ID:[/bold]  {task.project_id if task.project_id is not None else '-'}")
+    console.print(f"[bold]Goal ID:[/bold]     {task.goal_id if task.goal_id is not None else '-'}")
+    depends_str = ", ".join(f"#{d}" for d in task.depends) if task.depends else "-"
+    console.print(f"[bold]Depends on:[/bold]  {depends_str}")
     console.print(f"[bold]Created:[/bold]     {task.created_at or '-'}")
     console.print(f"[bold]Updated:[/bold]     {task.updated_at or '-'}")
+    if task.blocked_reason:
+        console.print(f"[bold]Blocked:[/bold]     {task.blocked_reason}")
+    if task.blocked_note:
+        console.print(f"[bold]Note:[/bold]        {task.blocked_note}")
     if task.description:
         _hr(console, "Description")
         console.print(task.description)
@@ -383,3 +392,34 @@ def format_project_status(report: ProjectStatusReport, out: TextIO = sys.stdout)
         console.print("[dim]No completed tasks yet.[/dim]")
 
     _hr(console)
+
+
+def _task_label(task: Task) -> str:
+    sv = task.status.value if hasattr(task.status, "value") else str(task.status)
+    style = _STATUS_STYLES.get(sv, "dim")
+    status_str = f"[{style}]{sv}[/{style}]" if style != "dim" else f"[dim]{sv}[/dim]"
+    return f"#{task.id} {task.name}  {status_str}"
+
+
+def format_dependency_tree(tree: DependencyTree, out: TextIO = sys.stdout) -> None:
+    """Rich dependency tree showing upstream and downstream chains for a task."""
+    console = Console(file=out, highlight=False, legacy_windows=False)
+    task = tree.task
+
+    root = Tree(_task_label(task))
+
+    up_node = root.add("[bold]Depends on (upstream)[/bold]")
+    if tree.upstream:
+        for t in tree.upstream:
+            up_node.add(_task_label(t))
+    else:
+        up_node.add("[dim]none[/dim]")
+
+    down_node = root.add("[bold]Depended on by (downstream)[/bold]")
+    if tree.downstream:
+        for t in tree.downstream:
+            down_node.add(_task_label(t))
+    else:
+        down_node.add("[dim]none[/dim]")
+
+    console.print(root)

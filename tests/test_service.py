@@ -636,3 +636,56 @@ class TestProjectServiceStatusReport:
     def test_not_found_raises(self, ps):
         with pytest.raises(ValueError, match="not found"):
             ps.status_report(99999)
+
+
+# ════════════════════════════════════════════════ TaskService.get_dependency_tree
+
+class TestTaskServiceDependencyTree:
+    def test_leaf_task_has_empty_chains(self, ts):
+        t = ts.create("Leaf")
+        tree = ts.get_dependency_tree(t.id)
+        assert tree.task.id == t.id
+        assert tree.upstream == []
+        assert tree.downstream == []
+
+    def test_linear_chain_upstream(self, ts):
+        t1 = ts.create("Root")
+        t2 = ts.create("Middle", depends=[t1.id])
+        t3 = ts.create("Tip", depends=[t2.id])
+        tree = ts.get_dependency_tree(t3.id)
+        up_ids = [t.id for t in tree.upstream]
+        assert t2.id in up_ids
+        assert t1.id in up_ids
+        assert tree.downstream == []
+
+    def test_linear_chain_downstream(self, ts):
+        t1 = ts.create("Root")
+        t2 = ts.create("Middle", depends=[t1.id])
+        t3 = ts.create("Tip", depends=[t2.id])
+        tree = ts.get_dependency_tree(t1.id)
+        down_ids = [t.id for t in tree.downstream]
+        assert t2.id in down_ids
+        assert t3.id in down_ids
+        assert tree.upstream == []
+
+    def test_branching_downstream(self, ts):
+        root = ts.create("Shared root")
+        child_a = ts.create("Child A", depends=[root.id])
+        child_b = ts.create("Child B", depends=[root.id])
+        tree = ts.get_dependency_tree(root.id)
+        down_ids = {t.id for t in tree.downstream}
+        assert child_a.id in down_ids
+        assert child_b.id in down_ids
+
+    def test_cycle_does_not_infinite_loop(self, ts):
+        t1 = ts.create("Cycle A")
+        t2 = ts.create("Cycle B", depends=[t1.id])
+        # Manually inject a cycle: t1 depends on t2
+        ts.update(t1.id, depends=[t2.id])
+        # Should terminate without hanging
+        tree = ts.get_dependency_tree(t1.id)
+        assert tree is not None
+
+    def test_not_found_raises(self, ts):
+        with pytest.raises(ValueError, match="not found"):
+            ts.get_dependency_tree(99999)

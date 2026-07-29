@@ -27,6 +27,14 @@ _MISSING = object()
 
 
 @dataclass
+class DependencyTree:
+    """Upstream and downstream dependency walk for a single task."""
+    task: "Task"
+    upstream: list    # Tasks this task depends on, BFS order (immediate deps first)
+    downstream: list  # Tasks that depend on this task, BFS order
+
+
+@dataclass
 class ProjectStatusReport:
     """Aggregated status snapshot for a single project."""
     project: "Project"
@@ -380,6 +388,49 @@ class TaskService:
             return result
         except Exception as exc:
             _slog_error("TaskService.get_ready_queue", exc)
+            raise
+
+    def get_dependency_tree(self, task_id: int) -> DependencyTree:
+        """Walk upstream (what this depends on) and downstream (what depends on this)."""
+        _slog("TaskService.get_dependency_tree", f"task_id={task_id}")
+        try:
+            task = self._repo.get_by_id(task_id)
+            if task is None:
+                raise ValueError(f"Task {task_id} not found")
+
+            # Upstream: BFS over depends chain, visited-set guards against cycles
+            upstream: list = []
+            visited_up: set = {task_id}
+            queue = list(task.depends or [])
+            while queue:
+                dep_id = queue.pop(0)
+                if dep_id in visited_up:
+                    continue
+                visited_up.add(dep_id)
+                dep = self._repo.get_by_id(dep_id)
+                if dep:
+                    upstream.append(dep)
+                    for next_id in (dep.depends or []):
+                        if next_id not in visited_up:
+                            queue.append(next_id)
+
+            # Downstream: BFS over reverse depends, visited-set guards against cycles
+            downstream: list = []
+            visited_down: set = {task_id}
+            down_queue = [task_id]
+            while down_queue:
+                tid = down_queue.pop(0)
+                for dep_task in self._repo.get_dependents(tid):
+                    if dep_task.id not in visited_down:
+                        visited_down.add(dep_task.id)
+                        downstream.append(dep_task)
+                        down_queue.append(dep_task.id)
+
+            _slog_result("TaskService.get_dependency_tree",
+                         f"upstream={len(upstream)} downstream={len(downstream)}")
+            return DependencyTree(task=task, upstream=upstream, downstream=downstream)
+        except Exception as exc:
+            _slog_error("TaskService.get_dependency_tree", exc)
             raise
 
     # ------------------------------------------------------------------ write

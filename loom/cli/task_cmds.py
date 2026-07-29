@@ -11,7 +11,7 @@ from rich.console import Console
 
 from ..db import get_connection, init_db
 from ..filters import TaskFilter, SortSpec
-from ..formatters import format_task_detail, format_task_events, format_tasks
+from ..formatters import format_dependency_tree, format_task_detail, format_task_events, format_tasks
 from ..models import SUGGESTED_TAGS, Status
 from ..service import TaskService
 
@@ -289,6 +289,22 @@ def task_show(jar: JarContext, task_id: int) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════ history
+
+@task.command("tree")
+@click.argument("task_id", type=int)
+@pass_jar
+def task_tree(jar: JarContext, task_id: int) -> None:
+    """Show the dependency tree for a task (upstream deps + downstream dependents)."""
+    svc, conn = _get_service(jar)
+    try:
+        tree = svc.get_dependency_tree(task_id)
+        format_dependency_tree(tree)
+    except ValueError as exc:
+        _err.print(f"[red]Error:[/red] {exc}")
+        sys.exit(1)
+    finally:
+        conn.close()
+
 
 @task.command("history")
 @click.argument("task_id", type=int)

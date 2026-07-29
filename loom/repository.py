@@ -80,6 +80,18 @@ class TaskRepository:
         rows = self._conn.execute(sql, params).fetchall()
         return [_row_to_task(r) for r in rows]
 
+    def get_dependents(self, task_id: int) -> list[Task]:
+        """Tasks that have task_id in their depends JSON array."""
+        _log("SELECT", "tasks", f"dependents of id={task_id}")
+        rows = self._conn.execute(
+            "SELECT t.* FROM tasks t "
+            "WHERE EXISTS ("
+            "    SELECT 1 FROM json_each(t.depends) WHERE CAST(value AS INTEGER) = ?"
+            ")",
+            (task_id,),
+        ).fetchall()
+        return [_row_to_task(r) for r in rows]
+
     # ------------------------------------------------------------------ write
 
     def insert(self, task: Task) -> Task:
