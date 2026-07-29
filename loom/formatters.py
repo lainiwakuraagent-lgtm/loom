@@ -18,7 +18,7 @@ from rich.tree import Tree
 from rich import box
 
 from .models import Project, Task, TaskEvent
-from .service import DependencyTree, ProjectStatusReport
+from .service import BlockedDigestEntry, DependencyTree, ProjectStatusReport
 
 # Supported format names
 FORMATS = ("table", "json", "csv", "plain")
@@ -423,3 +423,52 @@ def format_dependency_tree(tree: DependencyTree, out: TextIO = sys.stdout) -> No
         down_node.add("[dim]none[/dim]")
 
     console.print(root)
+
+
+# ══════════════════════════════════════════════════════════════════ blocked digest
+
+_BLOCKED_STATUS_STYLES = {
+    "blocked_owner":    "yellow",
+    "blocked_dep":      "cyan",
+    "blocked_external": "magenta",
+}
+
+
+def format_blocked_digest(
+    entries: list[BlockedDigestEntry],
+    out: TextIO = sys.stdout,
+) -> None:
+    """Rich table of blocked tasks, matching surface_blockers.py entry format."""
+    console = Console(file=out, highlight=False, legacy_windows=False)
+
+    if not entries:
+        console.print("[dim]No blocked tasks.[/dim]")
+        return
+
+    n = len(entries)
+    console.print(
+        f"\n[bold]Blocker Digest[/bold] — {n} task{'s' if n != 1 else ''} awaiting action\n"
+    )
+
+    table = Table(
+        show_header=True,
+        header_style="bold",
+        box=box.SIMPLE,
+        expand=False,
+        show_lines=True,
+    )
+    table.add_column("Task", style="bold", no_wrap=True)
+    table.add_column("Status", no_wrap=True)
+    table.add_column("What's needed", overflow="fold")
+
+    for e in entries:
+        style = _BLOCKED_STATUS_STYLES.get(e.status, "white")
+        status_cell = f"[{style}]{e.status}[/{style}]"
+        what = e.blocked_note or (e.description or "")[:200] or "(no detail)"
+        table.add_row(f"T{e.task_id}  {e.name}", status_cell, what)
+
+    console.print(table)
+    console.print(
+        "[dim]To unblock: reply with the answer, or mark the task as"
+        " defer / skip / won't-do.[/dim]\n"
+    )

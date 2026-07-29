@@ -89,6 +89,34 @@ cli.add_command(session)
 
 # ------------------------------------------------------------------ loom commands
 
+@cli.command("blockers")
+@click.option(
+    "--status",
+    default=None,
+    type=click.Choice(
+        ["blocked_owner", "blocked_dep", "blocked_external", "all"],
+        case_sensitive=False,
+    ),
+    help="Filter to a specific blocked status (default: all three).",
+)
+@click.option("--project", "project_id", type=int, default=None, help="Restrict to one project.")
+@pass_jar
+def cmd_blockers(jar: LoomContext, status: Optional[str], project_id: Optional[int]) -> None:
+    """Show all blocked tasks, excluding those from abandoned/suspended goals."""
+    from ..service import TaskService
+    from ..formatters import format_blocked_digest
+    conn = get_connection(jar.db_path)
+    init_db(conn)
+    try:
+        ts = TaskService(conn)
+        # "all" on the CLI means None in the service (no status filter)
+        svc_status = None if (status is None or status == "all") else status
+        entries = ts.get_blocked_digest(status=svc_status, project_id=project_id)
+        format_blocked_digest(entries)
+    finally:
+        conn.close()
+
+
 @cli.command("queue")
 @click.option("--goal", "goal_id", type=int, default=None, help="Filter by goal ID.")
 @click.option("--limit", default=10, show_default=True, help="Max tasks to show.")

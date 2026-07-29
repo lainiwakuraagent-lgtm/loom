@@ -92,6 +92,52 @@ class TaskRepository:
         ).fetchall()
         return [_row_to_task(r) for r in rows]
 
+    def get_blocked_digest(
+        self,
+        status: Optional[str] = None,
+        project_id: Optional[int] = None,
+    ) -> list[dict]:
+        """Blocked tasks (all three variants) excluding abandoned/suspended goals.
+
+        Returns raw dicts with keys: task_id, name, status, blocked_note,
+        description, project_id.
+        """
+        _log("SELECT", "tasks", f"blocked_digest status={status} project_id={project_id}")
+        where = []
+        params: list = []
+
+        if status is not None:
+            where.append("t.status = ?")
+            params.append(status)
+        else:
+            where.append("t.status IN ('blocked_dep', 'blocked_owner', 'blocked_external')")
+
+        where.append("(g.status IS NULL OR g.status NOT IN ('abandoned', 'suspended'))")
+
+        if project_id is not None:
+            where.append("t.project_id = ?")
+            params.append(project_id)
+
+        sql = (
+            "SELECT t.id, t.name, t.status, t.blocked_note, t.description, t.project_id "
+            "FROM tasks t "
+            "LEFT JOIN goals g ON t.goal_id = g.id "
+            f"WHERE {' AND '.join(where)} "
+            "ORDER BY t.id"
+        )
+        rows = self._conn.execute(sql, params).fetchall()
+        return [
+            {
+                "task_id": r[0],
+                "name": r[1] or "",
+                "status": r[2] or "",
+                "blocked_note": r[3],
+                "description": r[4],
+                "project_id": r[5],
+            }
+            for r in rows
+        ]
+
     # ------------------------------------------------------------------ write
 
     def insert(self, task: Task) -> Task:

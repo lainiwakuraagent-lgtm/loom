@@ -35,6 +35,17 @@ class DependencyTree:
 
 
 @dataclass
+class BlockedDigestEntry:
+    """One row in the blocked-tasks digest."""
+    task_id: int
+    name: str
+    status: str            # blocked_dep | blocked_owner | blocked_external
+    blocked_note: Optional[str]
+    description: Optional[str]
+    project_id: Optional[int]
+
+
+@dataclass
 class ProjectStatusReport:
     """Aggregated status snapshot for a single project."""
     project: "Project"
@@ -388,6 +399,43 @@ class TaskService:
             return result
         except Exception as exc:
             _slog_error("TaskService.get_ready_queue", exc)
+            raise
+
+    def get_blocked_digest(
+        self,
+        status: Optional[str] = None,
+        project_id: Optional[int] = None,
+    ) -> list[BlockedDigestEntry]:
+        """Return blocked tasks, excluding those whose goal is abandoned/suspended.
+
+        status: None → all three blocked_* variants; otherwise one of
+                'blocked_dep', 'blocked_owner', 'blocked_external'.
+        project_id: when given, restrict to that project.
+        """
+        _BLOCKED = {"blocked_dep", "blocked_owner", "blocked_external"}
+        if status is not None and status not in _BLOCKED:
+            raise ValueError(
+                f"status must be one of {sorted(_BLOCKED)} or None, got {status!r}"
+            )
+
+        _slog("TaskService.get_blocked_digest", f"status={status} project_id={project_id}")
+        try:
+            rows = self._repo.get_blocked_digest(status=status, project_id=project_id)
+            result = [
+                BlockedDigestEntry(
+                    task_id=r["task_id"],
+                    name=r["name"],
+                    status=r["status"],
+                    blocked_note=r["blocked_note"],
+                    description=r["description"],
+                    project_id=r["project_id"],
+                )
+                for r in rows
+            ]
+            _slog_result("TaskService.get_blocked_digest", f"count={len(result)}")
+            return result
+        except Exception as exc:
+            _slog_error("TaskService.get_blocked_digest", exc)
             raise
 
     def get_dependency_tree(self, task_id: int) -> DependencyTree:

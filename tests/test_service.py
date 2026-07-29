@@ -689,3 +689,84 @@ class TestTaskServiceDependencyTree:
     def test_not_found_raises(self, ts):
         with pytest.raises(ValueError, match="not found"):
             ts.get_dependency_tree(99999)
+
+
+# ════════════════════════════════════════════════ TaskService.get_blocked_digest
+
+class TestGetBlockedDigest:
+    """Tests for TaskService.get_blocked_digest / TaskRepository.get_blocked_digest."""
+
+    def _make_goal(self, gs, name="Active Goal", status="scheduled"):
+        return gs.create(name, description="", priority=5)
+
+    def test_returns_all_blocked_variants_when_no_status_filter(self, ts, conn):
+        from loom.service import GoalService
+        gs = GoalService(conn)
+        g = self._make_goal(gs)
+        t1 = ts.create("Task dep", status="blocked_dep", goal_id=g.id)
+        t2 = ts.create("Task owner", status="blocked_owner", goal_id=g.id)
+        t3 = ts.create("Task external", status="blocked_external", goal_id=g.id)
+        result = ts.get_blocked_digest()
+        ids = {e.task_id for e in result}
+        assert t1.id in ids
+        assert t2.id in ids
+        assert t3.id in ids
+
+    def test_status_filter_blocked_owner_only(self, ts, conn):
+        from loom.service import GoalService
+        gs = GoalService(conn)
+        g = self._make_goal(gs)
+        t1 = ts.create("blocked_dep task", status="blocked_dep", goal_id=g.id)
+        t2 = ts.create("blocked_owner task", status="blocked_owner", goal_id=g.id)
+        result = ts.get_blocked_digest(status="blocked_owner")
+        ids = {e.task_id for e in result}
+        assert t2.id in ids
+        assert t1.id not in ids
+
+    def test_goal_exclusion_abandoned(self, ts, conn):
+        from loom.service import GoalService
+        gs = GoalService(conn)
+        active = self._make_goal(gs, "Active")
+        abandoned = self._make_goal(gs, "Abandoned")
+        gs.update(abandoned.id, status="abandoned")
+        t_active = ts.create("Active goal task", status="blocked_owner", goal_id=active.id)
+        t_excl = ts.create("Abandoned goal task", status="blocked_owner", goal_id=abandoned.id)
+        result = ts.get_blocked_digest()
+        ids = {e.task_id for e in result}
+        assert t_active.id in ids
+        assert t_excl.id not in ids
+
+    def test_goal_exclusion_suspended(self, ts, conn):
+        from loom.service import GoalService
+        gs = GoalService(conn)
+        active = self._make_goal(gs, "Active")
+        suspended = self._make_goal(gs, "Suspended")
+        gs.update(suspended.id, status="suspended")
+        t_active = ts.create("Active", status="blocked_owner", goal_id=active.id)
+        t_excl = ts.create("Suspended", status="blocked_owner", goal_id=suspended.id)
+        result = ts.get_blocked_digest()
+        ids = {e.task_id for e in result}
+        assert t_active.id in ids
+        assert t_excl.id not in ids
+
+    def test_project_id_filter(self, ts, conn):
+        from loom.service import GoalService, ProjectService
+        gs = GoalService(conn)
+        ps = ProjectService(conn)
+        g = self._make_goal(gs)
+        p1 = ps.create("Project 1", start_date="2025-01-01")
+        p2 = ps.create("Project 2", start_date="2025-01-01")
+        t1 = ts.create("T in p1", status="blocked_owner", project_id=p1.id, goal_id=g.id)
+        t2 = ts.create("T in p2", status="blocked_owner", project_id=p2.id, goal_id=g.id)
+        result = ts.get_blocked_digest(project_id=p1.id)
+        ids = {e.task_id for e in result}
+        assert t1.id in ids
+        assert t2.id not in ids
+
+    def test_empty_result_returns_clean_list(self, ts):
+        result = ts.get_blocked_digest()
+        assert result == []
+
+    def test_invalid_status_raises_value_error(self, ts):
+        with pytest.raises(ValueError, match="status must be one of"):
+            ts.get_blocked_digest(status="unknown_status")
