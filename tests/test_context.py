@@ -62,7 +62,7 @@ class TestGenerateContextSnapshot:
         goal = gs.create("Goal", description="Why this exists", status="scheduled", priority=1)
         proj = ps.create("Proj", description="Why this project", goal_id=goal.id,
                           status="scheduled", priority=1)
-        ts.create("Do the thing", project_id=proj.id, goal_id=goal.id, status="scheduled", priority="H")
+        ts.create("Do the thing", project_id=proj.id, goal_id=goal.id, status="scheduled", priority=3)
 
         snapshot = generate_context_snapshot(conn)
         lineage = snapshot["current_task_lineage"]
@@ -76,7 +76,7 @@ class TestGenerateContextSnapshot:
         # No active goal exists, so get_ready_queue runs system-wide and can
         # surface a task that was never assigned a goal_id at all. Lineage
         # must report None here, not fabricate a link to nothing.
-        ts.create("No goal, no project", status="scheduled", priority="H")
+        ts.create("No goal, no project", status="scheduled", priority=3)
 
         snapshot = generate_context_snapshot(conn)
         lineage = snapshot["current_task_lineage"]

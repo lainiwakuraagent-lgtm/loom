@@ -574,8 +574,8 @@ class TestProjectServiceStatusReport:
     def _setup(self, ps, ts):
         """Return (project, tasks) with a mix of statuses."""
         p = ps.create("Rollup Project")
-        t_sched_h = ts.create("High priority", project_id=p.id, status="scheduled", priority="H")
-        t_sched_m = ts.create("Med priority",  project_id=p.id, status="scheduled", priority="M")
+        t_sched_h = ts.create("High priority", project_id=p.id, status="scheduled", priority=3)
+        t_sched_m = ts.create("Med priority",  project_id=p.id, status="scheduled", priority=2)
         t_done1   = ts.create("Done first",    project_id=p.id, status="done")
         t_done2   = ts.create("Done second",   project_id=p.id, status="done")
         t_block   = ts.create("Blocked task",  project_id=p.id, status="blocked_owner")
@@ -901,3 +901,102 @@ class TestGetActivity:
         result = ts.get_last_session_start()
         # list_recent returns newest first (ORDER BY id DESC)
         assert result == "2026-07-29T02:00:00Z"
+
+
+# ════════════════════════════════════════════════ Task.priority INTEGER migration
+
+class TestTaskPriorityIntegerMigration:
+    """Tests for the v7 migration: Task.priority TEXT → INTEGER."""
+
+    def test_default_priority_is_zero(self, ts):
+        t = ts.create("No priority given")
+        assert t.priority == 0
+        assert isinstance(t.priority, int)
+
+    def test_integer_priority_round_trips_via_create(self, ts):
+        t = ts.create("High pri task", priority=5)
+        assert t.priority == 5
+        assert isinstance(t.priority, int)
+
+    def test_integer_priority_round_trips_via_update(self, ts):
+        t = ts.create("Low pri task", priority=1)
+        updated = ts.update(t.id, priority=8)
+        assert updated.priority == 8
+        assert isinstance(updated.priority, int)
+
+    def test_urgency_score_preserved_for_high_equivalent(self, ts):
+        # Old: priority='H' → PRIORITY_VALUE['H']=3 → score contribution = 3*6 = 18
+        # New: priority=3 → (3 or 0)*6 = 18
+        t_new = ts.create("Pri 3", priority=3, status="scheduled")
+        # urgency_score = priority*6 + age component; priority*6 should be 18
+        assert t_new.urgency_score >= 18  # at minimum the priority component
+
+    def test_urgency_score_zero_for_no_priority(self, ts):
+        t = ts.create("No pri", priority=0, status="scheduled")
+        # urgency_score = 0*6 + small age component; age in seconds gives tiny score
+        assert t.urgency_score < 1  # effectively zero, only age component
+
+    def test_v7_migration_backfills_old_schema_db(self, conn):
+        """Simulate a pre-v7 DB and confirm migration converts text→int correctly."""
+        import sqlite3
+        # Build a v6-style DB with TEXT priority values
+        test_conn = sqlite3.connect(":memory:")
+        test_conn.row_factory = sqlite3.Row
+        from loom.db import _run_migrations, _DDL_SCHEMA_VERSION, _DDL_TASKS, _DDL_PROJECTS
+        from loom.db import _DDL_TASK_STATUS_CHECK_V4, _DDL_TASK_STATUS_CHECK_UPDATE_V4
+        test_conn.execute(_DDL_SCHEMA_VERSION)
+        test_conn.execute(_DDL_PROJECTS)
+        test_conn.execute(_DDL_TASKS)
+        test_conn.execute(_DDL_TASK_STATUS_CHECK_V4)
+        test_conn.execute(_DDL_TASK_STATUS_CHECK_UPDATE_V4)
+        # Add v4/v5/v6 columns including the TEXT priority
+        test_conn.execute("ALTER TABLE tasks ADD COLUMN goal_id INTEGER")
+        test_conn.execute("ALTER TABLE tasks ADD COLUMN priority TEXT DEFAULT 'none'")
+        test_conn.execute("ALTER TABLE tasks ADD COLUMN wait_until TEXT")
+        test_conn.execute("ALTER TABLE tasks ADD COLUMN depends TEXT")
+        test_conn.execute("ALTER TABLE tasks ADD COLUMN blocked_reason TEXT")
+        test_conn.execute("ALTER TABLE tasks ADD COLUMN blocked_note TEXT")
+        test_conn.execute("ALTER TABLE tasks ADD COLUMN urgency_score REAL DEFAULT 0")
+        test_conn.execute("ALTER TABLE tasks ADD COLUMN context_tag TEXT")
+        test_conn.execute("ALTER TABLE tasks ADD COLUMN estimated_sessions INTEGER")
+        test_conn.execute("ALTER TABLE tasks ADD COLUMN actual_sessions INTEGER DEFAULT 0")
+        test_conn.execute("ALTER TABLE tasks ADD COLUMN handoff_note TEXT")
+        test_conn.execute("ALTER TABLE tasks ADD COLUMN files TEXT DEFAULT NULL")
+        test_conn.execute("INSERT INTO schema_version (version) VALUES (6)")
+        # Seed rows with old TEXT priority values
+        test_conn.execute(
+            "INSERT INTO tasks (name, status, created_at, updated_at, priority) VALUES (?,?,?,?,?)",
+            ("H task", "scheduled", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", "H"),
+        )
+        test_conn.execute(
+            "INSERT INTO tasks (name, status, created_at, updated_at, priority) VALUES (?,?,?,?,?)",
+            ("M task", "scheduled", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", "M"),
+        )
+        test_conn.execute(
+            "INSERT INTO tasks (name, status, created_at, updated_at, priority) VALUES (?,?,?,?,?)",
+            ("L task", "scheduled", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", "L"),
+        )
+        test_conn.execute(
+            "INSERT INTO tasks (name, status, created_at, updated_at, priority) VALUES (?,?,?,?,?)",
+            ("none task", "scheduled", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", "none"),
+        )
+        test_conn.execute(
+            "INSERT INTO tasks (name, status, created_at, updated_at, priority) VALUES (?,?,?,?,?)",
+            ("numeric task", "scheduled", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", "7"),
+        )
+        test_conn.commit()
+        # Run the migration
+        with test_conn:
+            _run_migrations(test_conn, from_version=6)
+            test_conn.execute("UPDATE schema_version SET version = 7")
+        # Verify conversion
+        rows = {
+            r["name"]: r["priority"]
+            for r in test_conn.execute("SELECT name, priority FROM tasks").fetchall()
+        }
+        assert rows["H task"] == 3
+        assert rows["M task"] == 2
+        assert rows["L task"] == 1
+        assert rows["none task"] == 0
+        assert rows["numeric task"] == 7
+        test_conn.close()

@@ -77,9 +77,6 @@ _VALID_STATUSES = {s.value for s in Status}
 _VALID_PROJECT_STATUSES = {s.value for s in ProjectStatus}
 _VALID_GOAL_STATUSES = {s.value for s in GoalStatus}
 
-PRIORITY_VALUE = {"H": 3, "M": 2, "L": 1, "none": 0}
-
-
 def _now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -136,7 +133,7 @@ def _validate_goal_status(status: str) -> None:
 
 def _compute_urgency(task: Task) -> float:
     """Compute urgency score from priority, deadline, and age."""
-    score = PRIORITY_VALUE.get(task.priority or "none", 0) * 6
+    score = (task.priority or 0) * 6
     if task.deadline:
         try:
             days_until = (date.fromisoformat(task.deadline) - date.today()).days
@@ -511,7 +508,7 @@ class TaskService:
         project_id: Optional[int] = None,
         status: str = Status.TRIAGE.value,
         goal_id: Optional[int] = None,
-        priority: str = "none",
+        priority: int = 0,
         wait_until: Optional[str] = None,
         depends: Optional[list[int]] = None,
         context_tag: Optional[str] = None,
@@ -556,7 +553,7 @@ class TaskService:
         project_id: Optional[int] = _MISSING,
         status: Optional[str] = None,
         goal_id: Optional[int] = _MISSING,
-        priority: Optional[str] = None,
+        priority: Optional[int] = None,
         wait_until: Optional[str] = _MISSING,
         depends: Optional[list[int]] = _MISSING,
         blocked_reason: Optional[str] = _MISSING,

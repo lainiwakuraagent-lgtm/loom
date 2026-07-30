@@ -116,7 +116,7 @@ class Task:
     project_id: Optional[int] = None
     # LOOM additions
     goal_id: Optional[int] = None
-    priority: str = "none"                  # H | M | L | none
+    priority: int = 0
     wait_until: Optional[str] = None        # ISO-8601 date; defer until this date
     depends: Optional[list[int]] = None     # task IDs this task is blocked on
     blocked_reason: Optional[str] = None    # blocked_dep | blocked_owner

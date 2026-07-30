@@ -620,7 +620,7 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         project_id=row["project_id"],
         status=Status(row["status"]),
         goal_id=row["goal_id"] if "goal_id" in keys else None,
-        priority=row["priority"] if "priority" in keys else "none",
+        priority=row["priority"] if "priority" in keys else 0,
         wait_until=row["wait_until"] if "wait_until" in keys else None,
         depends=Task.depends_from_str(row["depends"] if "depends" in keys else None),
         blocked_reason=row["blocked_reason"] if "blocked_reason" in keys else None,

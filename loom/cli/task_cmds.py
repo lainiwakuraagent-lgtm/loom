@@ -61,6 +61,7 @@ def task() -> None:
     show_default=True,
     help="Initial status.",
 )
+@click.option("--priority", "-P", default=0, type=int, show_default=True, help="Numeric priority (0=none, higher=more urgent).")
 @pass_jar
 def task_add(
     jar: JarContext,
@@ -70,6 +71,7 @@ def task_add(
     deadline: Optional[str],
     project: Optional[int],
     status: str,
+    priority: int,
 ) -> None:
     """Create a new task.
 
@@ -91,6 +93,7 @@ def task_add(
             deadline=deadline,
             project_id=project,
             status=status,
+            priority=priority,
         )
         _err.print(f"[green]Created task #{t.id}:[/green] {t.name}")
     except ValueError as exc:
@@ -119,6 +122,7 @@ def task_add(
     type=click.Choice(_STATUSES, case_sensitive=False),
     help="New status.",
 )
+@click.option("--priority", "-P", default=None, type=int, help="New numeric priority (0=none, higher=more urgent).")
 @pass_jar
 def task_edit(
     jar: JarContext,
@@ -129,6 +133,7 @@ def task_edit(
     deadline: Optional[str],
     project: Optional[str],
     status: Optional[str],
+    priority: Optional[int],
 ) -> None:
     """Edit an existing task by ID."""
     svc, conn = _get_service(jar)
@@ -153,6 +158,8 @@ def task_edit(
             kwargs["project_id"] = int(project) if project.strip() else None
         if status is not None:
             kwargs["status"] = status
+        if priority is not None:
+            kwargs["priority"] = priority
 
         if not kwargs:
             _err.print("[yellow]Nothing to update. Pass at least one option.[/yellow]")

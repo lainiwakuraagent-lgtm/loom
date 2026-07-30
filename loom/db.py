@@ -9,7 +9,7 @@ from typing import Optional
 import platformdirs
 
 # Current schema version — bump when adding migrations.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _DEFAULT_DB_PATH: Optional[Path] = None
 
@@ -200,6 +200,8 @@ _MIGRATION_V6_TASKS = [
     "ALTER TABLE tasks ADD COLUMN files TEXT DEFAULT NULL",
 ]
 
+# v7 migrations — migrate Task.priority from TEXT to INTEGER
+
 # v5 project status trigger
 _VALID_PROJECT_STATUS_LITERAL = "('triage','desire','needs_plan','scheduled','in_progress','blocked_owner','blocked_external','suspended','done','failed')"
 
@@ -294,3 +296,16 @@ def _run_migrations(conn: sqlite3.Connection, from_version: int) -> None:
     if from_version < 6:
         for sql in _MIGRATION_V6_TASKS:
             conn.execute(sql)
+    if from_version < 7:
+        conn.execute("ALTER TABLE tasks ADD COLUMN priority_num INTEGER DEFAULT 0")
+        conn.execute("""
+            UPDATE tasks SET priority_num = CASE
+                WHEN priority IN ('H', 'high', 'critical') THEN 3
+                WHEN priority IN ('M', 'medium')           THEN 2
+                WHEN priority = 'L'                        THEN 1
+                WHEN priority = 'none'                     THEN 0
+                ELSE CAST(priority AS INTEGER)
+            END
+        """)
+        conn.execute("ALTER TABLE tasks DROP COLUMN priority")
+        conn.execute("ALTER TABLE tasks RENAME COLUMN priority_num TO priority")

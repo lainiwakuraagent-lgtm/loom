@@ -190,7 +190,7 @@ def cmd_queue(jar: LoomContext, goal_id: Optional[int], limit: int) -> None:
         click.echo("-" * 60)
         for i, t in enumerate(tasks, 1):
             click.echo(
-                f"{i:>3}  {t.id:>4}  {(t.priority or 'none'):>4}  "
+                f"{i:>3}  {t.id:>4}  {str(t.priority) if t.priority else '-':>4}  "
                 f"{t.urgency_score:>7.1f}  {t.name}"
             )
     finally:
