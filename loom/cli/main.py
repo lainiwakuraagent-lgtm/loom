@@ -117,6 +117,60 @@ def cmd_blockers(jar: LoomContext, status: Optional[str], project_id: Optional[i
         conn.close()
 
 
+@cli.command("activity")
+@click.option("--since", default=None, help="ISO-8601 UTC timestamp (e.g. 2026-07-30T00:00:00Z).")
+@click.option(
+    "--since-last-session",
+    "since_last_session",
+    is_flag=True,
+    default=False,
+    help="Resolve --since from the most recent Loom session's started_at.",
+)
+@click.option("--project", "project_id", type=int, default=None, help="Restrict to one project.")
+@pass_jar
+def cmd_activity(
+    jar: LoomContext,
+    since: Optional[str],
+    since_last_session: bool,
+    project_id: Optional[int],
+) -> None:
+    """Show recent task activity grouped by outcome (done / blocked / other).
+
+    Examples:
+      loom activity --since 2026-07-30T00:00:00Z
+      loom activity --since-last-session
+      loom activity --since-last-session --project 18
+    """
+    from ..service import TaskService
+    from ..formatters import format_activity_digest
+    conn = get_connection(jar.db_path)
+    init_db(conn)
+    try:
+        ts = TaskService(conn)
+
+        if since_last_session:
+            resolved = ts.get_last_session_start()
+            if resolved is None:
+                click.echo("No Loom session recorded yet — cannot resolve --since-last-session.")
+                return
+            since = resolved
+            since_label = f"last session ({since[:16]})"
+        elif since:
+            since_label = since[:16]
+        else:
+            click.echo(
+                "Provide --since <ISO> or --since-last-session.\n"
+                "Example: loom activity --since 2026-07-30T00:00:00Z",
+                err=True,
+            )
+            raise SystemExit(1)
+
+        entries = ts.get_activity(since=since, project_id=project_id)
+        format_activity_digest(entries, since_label=since_label)
+    finally:
+        conn.close()
+
+
 @cli.command("queue")
 @click.option("--goal", "goal_id", type=int, default=None, help="Filter by goal ID.")
 @click.option("--limit", default=10, show_default=True, help="Max tasks to show.")

@@ -823,3 +823,81 @@ class TestReconcileBlockedDep:
         ts.update(d2.id, status="done")
         ts.reconcile_blocked_dep()
         assert ts.get(blocked.id).status.value == "scheduled"
+
+
+# ════════════════════════════════════════════════ TaskService.get_activity
+
+class TestGetActivity:
+    """Tests for TaskService.get_activity and get_last_session_start."""
+
+    def test_empty_window_returns_clean_list(self, ts):
+        # Far-future since timestamp — no events should match
+        result = ts.get_activity(since="2099-01-01T00:00:00Z")
+        assert result == []
+
+    def test_since_boundary_includes_events_on_or_after(self, ts):
+        t = ts.create("Alpha")
+        ts.update(t.id, status="done")
+        # Find the changed_at of the done event
+        history = ts.get_history(t.id)
+        done_evt = next(e for e in history if e.new_value == "done")
+        # Query exactly at that timestamp — should include it
+        result = ts.get_activity(since=done_evt.changed_at)
+        task_ids = [e.task_id for e in result]
+        assert t.id in task_ids
+
+    def test_since_boundary_excludes_events_before(self, ts):
+        t = ts.create("Beta")
+        ts.update(t.id, status="done")
+        history = ts.get_history(t.id)
+        done_evt = next(e for e in history if e.new_value == "done")
+        # Far-past since — both created and done events should appear
+        result = ts.get_activity(since="2020-01-01T00:00:00Z")
+        task_ids = [e.task_id for e in result]
+        assert t.id in task_ids
+        # Far-future — no events
+        result_empty = ts.get_activity(since="2099-01-01T00:00:00Z")
+        assert result_empty == []
+
+    def test_project_scoping_excludes_other_project(self, ts, ps):
+        p1 = ps.create("P1")
+        p2 = ps.create("P2")
+        t1 = ts.create("In P1", project_id=p1.id)
+        t2 = ts.create("In P2", project_id=p2.id)
+        result = ts.get_activity(since="2020-01-01T00:00:00Z", project_id=p1.id)
+        task_ids = {e.task_id for e in result}
+        assert t1.id in task_ids
+        assert t2.id not in task_ids
+
+    def test_unscoped_returns_all_projects(self, ts, ps):
+        p1 = ps.create("P1")
+        p2 = ps.create("P2")
+        t1 = ts.create("In P1", project_id=p1.id)
+        t2 = ts.create("In P2", project_id=p2.id)
+        result = ts.get_activity(since="2020-01-01T00:00:00Z")
+        task_ids = {e.task_id for e in result}
+        assert t1.id in task_ids
+        assert t2.id in task_ids
+
+    def test_activity_entry_contains_task_name_from_snapshot(self, ts):
+        t = ts.create("Named Task")
+        ts.update(t.id, status="done")
+        result = ts.get_activity(since="2020-01-01T00:00:00Z")
+        entry = next((e for e in result if e.task_id == t.id), None)
+        assert entry is not None
+        # Name should come from task_snapshot, not fallback to "T{id}"
+        assert entry.task_name == "Named Task"
+
+    def test_get_last_session_start_returns_none_when_no_sessions(self, ts):
+        result = ts.get_last_session_start()
+        assert result is None
+
+    def test_get_last_session_start_returns_most_recent(self, ts, conn):
+        from loom.repository import LoomSessionRepository
+        from loom.models import LoomSession
+        repo = LoomSessionRepository(conn)
+        repo.insert(LoomSession(date="2026-07-28", session_number=1, started_at="2026-07-28T01:00:00Z"))
+        repo.insert(LoomSession(date="2026-07-29", session_number=1, started_at="2026-07-29T02:00:00Z"))
+        result = ts.get_last_session_start()
+        # list_recent returns newest first (ORDER BY id DESC)
+        assert result == "2026-07-29T02:00:00Z"

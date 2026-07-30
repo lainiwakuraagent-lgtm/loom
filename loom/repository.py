@@ -265,6 +265,39 @@ class TaskEventRepository:
         ).fetchall()
         return [_row_to_task_event(r) for r in rows]
 
+    def list_since(
+        self,
+        since: str,
+        project_id: Optional[int] = None,
+    ) -> list[TaskEvent]:
+        """Return task events on or after *since* (ISO-8601 UTC).
+
+        When project_id is given, events are filtered to tasks currently in that
+        project via INNER JOIN. Deleted-task events are excluded from the
+        project-scoped view (row is gone); they appear in the unscoped view via
+        task_snapshot data.
+        """
+        _log("SELECT", "task_events", f"since={since} project_id={project_id}")
+        if project_id is not None:
+            rows = self._conn.execute(
+                """
+                SELECT te.*
+                FROM task_events te
+                INNER JOIN tasks t ON t.id = te.task_id
+                WHERE te.changed_at >= ?
+                  AND t.project_id = ?
+                ORDER BY te.changed_at ASC, te.id ASC
+                """,
+                (since, project_id),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM task_events WHERE changed_at >= ?"
+                " ORDER BY changed_at ASC, id ASC",
+                (since,),
+            ).fetchall()
+        return [_row_to_task_event(r) for r in rows]
+
 
 # ══════════════════════════════════════════════════════════════════ Project repo
 

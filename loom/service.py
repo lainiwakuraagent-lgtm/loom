@@ -46,6 +46,19 @@ class BlockedDigestEntry:
 
 
 @dataclass
+class ActivityEntry:
+    """One event in the activity/timeline digest."""
+    task_id: int
+    task_name: str
+    event_type: str        # "created" | "updated" | "deleted"
+    field_name: Optional[str]
+    old_value: Optional[str]
+    new_value: Optional[str]
+    changed_at: str        # ISO-8601 UTC
+    project_id: Optional[int]
+
+
+@dataclass
 class ProjectStatusReport:
     """Aggregated status snapshot for a single project."""
     project: "Project"
@@ -360,6 +373,7 @@ class ProjectService:
 
 class TaskService:
     def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
         self._repo = TaskRepository(conn)
         self._project_repo = ProjectRepository(conn)
         self._event_repo = TaskEventRepository(conn)
@@ -632,6 +646,61 @@ class TaskService:
         except Exception as exc:
             _slog_error("TaskService.get_history", exc)
             raise
+
+    def get_activity(
+        self,
+        since: str,
+        project_id: Optional[int] = None,
+    ) -> list[ActivityEntry]:
+        """Return a flat list of ActivityEntry for all events on or after *since*.
+
+        Task names are resolved from task_snapshot (no live-row dependency, so
+        events for deleted tasks are included in the unscoped view).
+        """
+        _slog("TaskService.get_activity", f"since={since} project_id={project_id}")
+        try:
+            events = self._event_repo.list_since(since, project_id=project_id)
+            result: list[ActivityEntry] = []
+            for e in events:
+                task_name = f"T{e.task_id}"
+                ev_project_id: Optional[int] = None
+                if e.task_snapshot:
+                    try:
+                        snap = json.loads(e.task_snapshot)
+                        if snap.get("name"):
+                            task_name = snap["name"]
+                        ev_project_id = snap.get("project_id")
+                    except (ValueError, KeyError, TypeError):
+                        pass
+                et = e.event_type.value if hasattr(e.event_type, "value") else str(e.event_type)
+                result.append(ActivityEntry(
+                    task_id=e.task_id,
+                    task_name=task_name,
+                    event_type=et,
+                    field_name=e.field_name,
+                    old_value=e.old_value,
+                    new_value=e.new_value,
+                    changed_at=e.changed_at,
+                    project_id=ev_project_id,
+                ))
+            _slog_result("TaskService.get_activity", f"count={len(result)}")
+            return result
+        except Exception as exc:
+            _slog_error("TaskService.get_activity", exc)
+            raise
+
+    def get_last_session_start(self) -> Optional[str]:
+        """Return the started_at ISO timestamp of the most recent LoomSession, or None."""
+        _slog("TaskService.get_last_session_start", "")
+        try:
+            session_repo = LoomSessionRepository(self._conn)
+            sessions = session_repo.list_recent(limit=1)
+            if sessions and sessions[0].started_at:
+                return sessions[0].started_at
+            return None
+        except Exception as exc:
+            _slog_error("TaskService.get_last_session_start", exc)
+            return None
 
     def reconcile_blocked_dep(self) -> list[Task]:
         """Sweep all blocked_dep tasks and promote any whose deps are fully done.

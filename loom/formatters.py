@@ -18,7 +18,7 @@ from rich.tree import Tree
 from rich import box
 
 from .models import Project, Task, TaskEvent
-from .service import BlockedDigestEntry, DependencyTree, ProjectStatusReport
+from .service import ActivityEntry, BlockedDigestEntry, DependencyTree, ProjectStatusReport
 
 # Supported format names
 FORMATS = ("table", "json", "csv", "plain")
@@ -472,3 +472,107 @@ def format_blocked_digest(
         "[dim]To unblock: reply with the answer, or mark the task as"
         " defer / skip / won't-do.[/dim]\n"
     )
+
+
+# ══════════════════════════════════════════════════════════════════ activity digest
+
+_STATUS_SECTION_ORDER = ["done", "blocked_owner", "blocked_dep", "blocked_external"]
+_STATUS_STYLES_ACT = {
+    "done":             "green",
+    "blocked_owner":    "red",
+    "blocked_dep":      "yellow",
+    "blocked_external": "magenta",
+    "in_progress":      "cyan",
+    "scheduled":        "white",
+    "needs_plan":       "dim",
+    "created":          "bright_white",
+}
+
+
+def format_activity_digest(
+    entries: list[ActivityEntry],
+    since_label: str = "",
+    out: TextIO = sys.stdout,
+) -> None:
+    """Rich grouped digest of task events, sectioned by outcome type."""
+    console = Console(file=out, highlight=False, legacy_windows=False)
+
+    if not entries:
+        label = f" since {since_label}" if since_label else ""
+        console.print(f"[dim]No activity{label}.[/dim]")
+        return
+
+    label = f" since {since_label}" if since_label else ""
+    console.print(f"\n[bold]Activity Digest[/bold]{label} — {len(entries)} event(s)\n")
+
+    # Group events by task_id, preserving chronological order of first occurrence
+    from collections import defaultdict
+    task_order: list[int] = []
+    task_entries: dict[int, list[ActivityEntry]] = defaultdict(list)
+    for e in entries:
+        if e.task_id not in task_entries:
+            task_order.append(e.task_id)
+        task_entries[e.task_id].append(e)
+
+    # Partition tasks into sections based on their final status event
+    completed_ids: list[int] = []
+    newly_blocked_ids: list[int] = []
+    other_ids: list[int] = []
+
+    for tid in task_order:
+        evts = task_entries[tid]
+        # Find last status change in this window
+        status_events = [e for e in evts if e.field_name == "status"]
+        final_status = status_events[-1].new_value if status_events else None
+        if final_status == "done":
+            completed_ids.append(tid)
+        elif final_status and final_status.startswith("blocked"):
+            newly_blocked_ids.append(tid)
+        else:
+            other_ids.append(tid)
+
+    def _render_task(tid: int) -> None:
+        evts = task_entries[tid]
+        name = evts[0].task_name
+        # Truncate name if too long
+        name_str = name if len(name) <= 60 else name[:57] + "…"
+
+        status_evts = [e for e in evts if e.field_name == "status"]
+        final_status = status_evts[-1].new_value if status_evts else None
+        ts = evts[-1].changed_at[:16].replace("T", " ")  # YYYY-MM-DD HH:MM
+
+        style = _STATUS_STYLES_ACT.get(final_status or "", "white")
+        status_badge = f"[{style}]{final_status or '—'}[/{style}]" if final_status else ""
+
+        # Show "created", or status transitions, or field changes
+        if any(e.event_type == "created" for e in evts):
+            summary = "[dim]created[/dim]"
+        elif status_evts:
+            transitions = " → ".join(
+                f"{e.old_value or '?'} [bold]→[/bold] {e.new_value or '?'}"
+                for e in status_evts
+            )
+            summary = transitions
+        else:
+            changed_fields = sorted({e.field_name for e in evts if e.field_name})
+            summary = f"[dim]{', '.join(changed_fields)} changed[/dim]"
+
+        console.print(
+            f"  [dim]T{tid}[/dim]  {name_str}  {status_badge}  [dim]{ts}[/dim]\n"
+            f"        {summary}\n"
+        )
+
+    if completed_ids:
+        console.print("[bold green]✓ Completed[/bold green]")
+        for tid in completed_ids:
+            _render_task(tid)
+
+    if newly_blocked_ids:
+        console.print("[bold red]▲ Newly Blocked[/bold red]")
+        for tid in newly_blocked_ids:
+            _render_task(tid)
+
+    if other_ids:
+        console.print("[bold]Other Changes[/bold]")
+        for tid in other_ids:
+            _render_task(tid)
